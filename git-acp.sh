@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# /webapps/erd-ecosystem/devops/scripts/git-acp.sh
+# /webapps/erd-ecosystem/.devtools/git-acp.sh
 set -euo pipefail
 IFS=$'\n\t'
 
@@ -36,6 +36,13 @@ DAILY_GOAL="${DAILY_GOAL:-10}"
 PROFILES=("${PROFILES[@]:-}")
 GH_AUTO_CREATE="${GH_AUTO_CREATE:-false}"
 GH_DEFAULT_VISIBILITY="${GH_DEFAULT_VISIBILITY:-private}"
+
+# --- Feature/PR policy (defaults) ---
+ENFORCE_FEATURE_BRANCH="${ENFORCE_FEATURE_BRANCH:-true}"   # exige feature/*
+AUTO_RENAME_TO_FEATURE="${AUTO_RENAME_TO_FEATURE:-true}"   # renombra si no cumple
+PR_PROMPT_AFTER_PUSH="${PR_PROMPT_AFTER_PUSH:-true}"       # pregunta si crear PR al subir
+PR_BASE_BRANCH="${PR_BASE_BRANCH:-dev}"                    # PR siempre hacia dev
+PR_DRAFT_DEFAULT="${PR_DRAFT_DEFAULT:-false}"              # PR draft por defecto?
 
 # --- Switch Modo Simple vs Pro ---
 SIMPLE_MODE=false
@@ -343,6 +350,125 @@ do_commit() {
   fi
 }
 
+# ——— Feature/PR policy helpers ———
+is_tty() { [[ -t 0 && -t 1 ]]; }
+
+is_protected_branch() {
+  case "$1" in
+    main|master|dev|staging) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Convierte cualquier rama "x/y/z" en un sufijo seguro para feature/*
+# porque tu validate-pr actual usa feature/* (sin **), y bash no matchea '/' con '*'
+sanitize_feature_suffix() {
+  local b="$1"
+  b="${b//\//-}"              # / -> -
+  b="${b// /-}"               # espacios -> -
+  b="${b//[^a-zA-Z0-9._-]/-}" # caracteres raros -> -
+  # compacta múltiples '-' (opcional)
+  b="$(echo "$b" | sed -E 's/-+/-/g')"
+  echo "$b"
+}
+
+suggest_feature_branch() {
+  local current="$1"
+  local suffix
+  suffix="$(sanitize_feature_suffix "$current")"
+  echo "feature/${suffix}"
+}
+
+ensure_feature_branch_or_rename() {
+  local branch="$1"
+
+  # No permitir commits/push directo en ramas protegidas
+  if is_protected_branch "$branch"; then
+    echo "🛑 Rama protegida detectada: '$branch'"
+    echo "✅ Política ERD: trabaja SIEMPRE en feature/* y entra por PR."
+    echo "   Usa: git feature <nombre>"
+    exit 1
+  fi
+
+  # Si ya cumple, OK
+  if [[ "$branch" == feature/* ]]; then
+    return 0
+  fi
+
+  # Si no exigimos, salir
+  if [[ "$ENFORCE_FEATURE_BRANCH" != "true" ]]; then
+    return 0
+  fi
+
+  local new_branch
+  new_branch="$(suggest_feature_branch "$branch")"
+
+  echo "⚠️  Tu rama actual NO cumple la política feature/*"
+  echo "   Rama actual: $branch"
+  echo "   Sugerencia : $new_branch"
+
+  if [[ "$AUTO_RENAME_TO_FEATURE" == "true" ]]; then
+    if is_tty; then
+      read -r -p "¿Renombrar automáticamente a '$new_branch'? [S/n]: " ans
+      ans="${ans:-S}"
+      if [[ ! "$ans" =~ ^[Ss]$ ]]; then
+        echo "✋ Cancelado. Crea una rama feature/* con: git feature <nombre>"
+        exit 2
+      fi
+    fi
+
+    # Renombra local
+    git branch -m "$branch" "$new_branch"
+    echo "✅ Rama renombrada localmente: $branch -> $new_branch"
+  else
+    echo "✋ Abortado. Crea una rama feature/* con: git feature <nombre>"
+    exit 2
+  fi
+}
+
+gh_ready() {
+  command -v gh >/dev/null 2>&1 || return 1
+  gh auth status >/dev/null 2>&1 || return 1
+  return 0
+}
+
+pr_exists_for_branch() {
+  local head="$1" base="$2"
+  GH_PAGER=cat gh pr list --state open --head "$head" --base "$base" --json number --jq 'length' 2>/dev/null | grep -qE '^[1-9]'
+}
+
+offer_create_pr_if_needed() {
+  local head="$1" base="$2"
+
+  [[ "$PR_PROMPT_AFTER_PUSH" == "true" ]] || return 0
+  [[ "$head" == feature/* ]] || return 0
+  is_tty || return 0
+
+  if ! gh_ready; then
+    echo "ℹ️  No puedo ofrecer PR automático porque 'gh' no está listo."
+    echo "   Instala/login: gh auth login"
+    return 0
+  fi
+
+  if pr_exists_for_branch "$head" "$base"; then
+    return 0
+  fi
+
+  echo
+  echo "🟢 Ya subiste la rama '$head' a GitHub."
+  read -r -p "¿Quieres abrir el PR hacia '$base' ahora? [S/n]: " ans
+  ans="${ans:-S}"
+  if [[ "$ans" =~ ^[Ss]$ ]]; then
+    local draft_flag=()
+    [[ "$PR_DRAFT_DEFAULT" == "true" ]] && draft_flag+=(--draft)
+
+    echo "🚀 Creando PR: $head -> $base"
+    GH_PAGER=cat gh pr create --base "$base" --head "$head" --fill "${draft_flag[@]}"
+  else
+    echo "👌 OK. Puedes abrirlo luego con: git pr"
+  fi
+}
+
 do_push() {
   local remote="$1"
   local branch
@@ -371,13 +497,29 @@ do_push() {
     echo "🔄 Asumiendo destino hacia rama '${branch}'..."
     target_ref="HEAD:refs/heads/${branch}"
   else
+    # ✅ Política: obligar feature/* antes del push (y renombrar si hace falta)
+    ensure_feature_branch_or_rename "$branch"
+
+    # Si renombramos, vuelve a leer nombre actual y úsalo como destino real
+    branch="$(git branch --show-current 2>/dev/null || echo "")"
     target_ref="$branch"
   fi
 
   echo "📡 Enviando a '$remote' (Ref: $target_ref)..."
 
+  # Si no hay upstream, intenta setearlo (solo cuando target_ref es una rama normal)
+  if [[ "$target_ref" == "$branch" ]]; then
+    if ! git rev-parse --abbrev-ref --symbolic-full-name "@{u}" >/dev/null 2>&1; then
+      if git push -u "$remote" "$target_ref"; then
+        offer_create_pr_if_needed "$branch" "$PR_BASE_BRANCH"
+        return 0
+      fi
+    fi
+  fi
+
   # Intento 1: Push normal
   if git push "$remote" "$target_ref"; then
+    offer_create_pr_if_needed "$branch" "$PR_BASE_BRANCH"
     return 0
   fi
 
@@ -390,6 +532,7 @@ do_push() {
       echo "✅ Rebase exitoso. Sincronizando tags y reintentando push..."
       git fetch --tags --force "$remote"
       git push "$remote" "$target_ref"
+      offer_create_pr_if_needed "$branch" "$PR_BASE_BRANCH"
   else
       echo "❌ Conflicto irresoluble automáticamente."
       echo "🛠  Por favor, resuelve los conflictos manualmente y luego ejecuta:"

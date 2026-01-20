@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# /webapps/erd-ecosystem/devops/scripts/git-promote.sh
+# /webapps/erd-ecosystem/.devtools/git-promote.sh
 set -euo pipefail
 
 # --- CONFIGURACIÓN ---

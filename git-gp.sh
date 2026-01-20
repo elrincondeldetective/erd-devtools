@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# /webapps/erd-ecosystem/devops/scripts/git-gp.sh
+# /webapps/erd-ecosystem/.devtools/git-gp.sh
 set -euo pipefail
 
 # 1. Obtener contexto de Git

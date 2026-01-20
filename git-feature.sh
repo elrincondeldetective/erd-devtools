@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# /webapps/erd-ecosystem/devops/scripts/git-feature.sh
+# /webapps/erd-ecosystem/.devtools/git-feature.sh
 set -euo pipefail
 IFS=$'\n\t'
 
@@ -65,11 +65,17 @@ update_base_branch() {
 
 normalize_branch_name() {
   local name="$1"
-  if [[ "$name" == */* ]]; then
+  # Si ya empieza con feature/, OK
+  if [[ "$name" == feature/* ]]; then
     echo "$name"
-  else
-    echo "${PREFIX}${name}"
+    return
   fi
+
+  # Cualquier otra cosa: convertir a un sufijo seguro y prefijar feature/
+  local safe="${name//\//-}"
+  safe="${safe// /-}"
+  safe="$(echo "$safe" | sed -E 's/[^a-zA-Z0-9._-]+/-/g; s/-+/-/g')"
+  echo "${PREFIX}${safe}"
 }
 
 # ---- parse args ----
