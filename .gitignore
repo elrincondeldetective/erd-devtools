@@ -1,0 +1,43 @@
+# /webapps/erd-ecosystem/.gitignore
+# --- Python / Django ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+db.sqlite3
+*.log
+
+# --- Node / JS ---
+node_modules/
+dist/
+build/
+.next/
+
+# --- Terraform (SEGURIDAD CRÍTICA) ---
+# Carpeta de plugins y estado local
+.terraform/
+
+# Estado (Contiene secretos en texto plano - JAMÁS SUBIR)
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Archivos de variables con secretos (si usas terraform.tfvars)
+*.tfvars
+*.tfvars.json
+
+# Logs de crash
+crash.log
+
+# Archivos de lock (Opcional: algunos prefieren subirlo, Sid Palas recomienda subirlo si todos usan la misma arqui)
+# .terraform.lock.hcl
+
+# --- IDEs / Sistema ---
+.vscode/
+.idea/
+.DS_Store
+# Configuración personal de git-acp
+.git-acprc
+.devtools/.setup_completed
+.env
