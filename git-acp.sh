@@ -379,16 +379,22 @@ suggest_feature_branch() {
   echo "feature/${suffix}"
 }
 
+unique_branch_name() {
+  local name="$1"
+  if ! git show-ref --verify --quiet "refs/heads/$name"; then
+    echo "$name"
+    return 0
+  fi
+
+  local i=1
+  while git show-ref --verify --quiet "refs/heads/${name}-${i}"; do
+    ((i++))
+  done
+  echo "${name}-${i}"
+}
+
 ensure_feature_branch_or_rename() {
   local branch="$1"
-
-  # No permitir commits/push directo en ramas protegidas
-  if is_protected_branch "$branch"; then
-    echo "🛑 Rama protegida detectada: '$branch'"
-    echo "✅ Política ERD: trabaja SIEMPRE en feature/* y entra por PR."
-    echo "   Usa: git feature <nombre>"
-    exit 1
-  fi
 
   # Si ya cumple, OK
   if [[ "$branch" == feature/* ]]; then
@@ -400,6 +406,37 @@ ensure_feature_branch_or_rename() {
     return 0
   fi
 
+  # --- Caso A: Estás en rama protegida (dev/main/staging/master) ---
+  # En este caso NO abortamos: movemos el trabajo a una rama feature/*
+  if is_protected_branch "$branch"; then
+    local upstream=""
+    upstream="$(git rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>/dev/null || true)"
+
+    local short_sha
+    short_sha="$(git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M%S)"
+
+    # Nota: usamos feature/<branch>-<sha> para evitar colisiones y evitar '/' extra
+    local candidate new_branch
+    candidate="feature/${branch}-${short_sha}"
+    new_branch="$(unique_branch_name "$candidate")"
+
+    echo "🧹 Estás en rama protegida '$branch'. Moviendo el trabajo a '$new_branch'..."
+    git checkout -b "$new_branch"
+
+    # Opcional: restaurar la rama protegida local a su upstream (para evitar push accidental)
+    if [[ -n "$upstream" ]]; then
+      git branch -f "$branch" "$upstream" >/dev/null 2>&1 || true
+      echo "🔒 Rama local '$branch' restaurada a '$upstream' (para evitar push accidental)."
+    else
+      echo "ℹ️  Nota: '$branch' no tiene upstream configurado; no lo pude restaurar automáticamente."
+      echo "   Si quieres restaurarla luego:"
+      echo "   git fetch origin $branch && git branch -f $branch origin/$branch"
+    fi
+
+    return 0
+  fi
+
+  # --- Caso B: Rama normal (no protegida) pero NO es feature/* ---
   local new_branch
   new_branch="$(suggest_feature_branch "$branch")"
 
@@ -417,7 +454,6 @@ ensure_feature_branch_or_rename() {
       fi
     fi
 
-    # Renombra local
     git branch -m "$branch" "$new_branch"
     echo "✅ Rama renombrada localmente: $branch -> $new_branch"
   else
@@ -425,6 +461,7 @@ ensure_feature_branch_or_rename() {
     exit 2
   fi
 }
+
 
 gh_ready() {
   command -v gh >/dev/null 2>&1 || return 1
