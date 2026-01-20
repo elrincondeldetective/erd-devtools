@@ -6,7 +6,7 @@ IFS=$'\n\t'
 REMOTE="${REMOTE:-origin}"
 BASE_BRANCH="${BASE_BRANCH:-dev}"
 PREFIX="${PREFIX:-feature/}"
-MODE="rebase"       # rebase | merge
+MODE="rebase"       # rebase | merge...
 NO_PULL=false
 
 usage() {
