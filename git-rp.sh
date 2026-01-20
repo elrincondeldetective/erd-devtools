@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# /webapps/erd-ecosystem/devops/scripts/git-rp.sh
+# /webapps/erd-ecosystem/.devtools/git-rp.sh
 # "Reset & Push" - Elimina el último commit local y remoto.
 set -euo pipefail
 

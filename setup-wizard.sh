@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# /webapps/erd-ecosystem/devops/scripts/setup-wizard.sh
+# /webapps/erd-ecosystem/.devtools/setup-wizard.sh
 set -e
 
 # Archivo marcador para saber si ya se ejecutó
