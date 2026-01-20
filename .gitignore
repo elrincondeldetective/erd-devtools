@@ -41,3 +41,4 @@ crash.log
 .git-acprc
 .devtools/.setup_completed
 .env
+devbox.lock

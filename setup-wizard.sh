@@ -3,7 +3,8 @@
 set -e
 
 MARKER_FILE=".devtools/.setup_completed"
-[ -f "$MARKER_FILE" ] && exit 0
+# CAMBIO: Apuntamos al archivo correcto dentro de .devtools
+ACPRC_FILE=".devtools/.git-acprc"
 
 # --- Funciones Helpers ---
 log_success() { gum style --foreground 76 "✅ $1"; }
@@ -187,37 +188,30 @@ if [ "$UPLOAD_SUCCESS" = false ]; then
 fi
 
 # ==============================================================================
-# PASO 4: CONFIGURACIÓN LOCAL (CORREGIDO: EMAIL EN BLANCO)
+# PASO 4: CONFIGURACIÓN LOCAL
 # ==============================================================================
 gum style --foreground 212 "5. Configurando Identidad Local"
 
-# Datos de GitHub
 GH_NAME=$(gh api user -q ".name" 2>/dev/null || echo "")
 GH_LOGIN=$(gh api user -q ".login" 2>/dev/null || echo "")
 GH_EMAIL=$(gh api user -q ".email" 2>/dev/null || echo "")
 
-# Lógica Nombre
 if [ -n "$GH_NAME" ]; then SUGGESTED_NAME="$GH_NAME";
 elif [ -n "$GH_LOGIN" ]; then SUGGESTED_NAME="$GH_LOGIN";
 else SUGGESTED_NAME=$(git config --global user.name || echo ""); fi
 
-# Lógica Email (Solo sugerencia visual)
 SUGGESTED_EMAIL="${GH_EMAIL:-$(git config --global user.email)}"
 
 gum style "Confirma tu firma para los commits:"
 
-# Input Nombre (Con valor por defecto)
 GIT_NAME=$(gum input --placeholder "Tu Nombre" --value "$SUGGESTED_NAME" --header "Nombre")
 
-# Input Email (CAMBIO: SIN valor por defecto, limpio para escribir)
 EMAIL_HEADER="Email"
 if [ -n "$SUGGESTED_EMAIL" ]; then
     EMAIL_HEADER="Email (Detectado: $SUGGESTED_EMAIL - Enter para confirmar o escribe otro)"
 fi
-
 GIT_EMAIL=$(gum input --placeholder "ej: usuario@empresa.com" --header "$EMAIL_HEADER")
 
-# Si el usuario lo dejó vacío, usamos el sugerido como fallback
 if [ -z "$GIT_EMAIL" ]; then
     if [ -n "$SUGGESTED_EMAIL" ]; then
         GIT_EMAIL="$SUGGESTED_EMAIL"
@@ -236,7 +230,35 @@ git config commit.gpgsign true
 git config tag.gpgsign true
 
 # ==============================================================================
-# PASO 5: VALIDACIÓN FINAL
+# PASO 5: REGISTRO EN EL SELECTOR DE IDENTIDADES
+# ==============================================================================
+gum style --foreground 212 "6. Registrando en Selector de Identidades"
+
+# Construimos la línea tal como la lee git-acp.sh
+# DisplayName;GitName;GitEmail;SigningKey(Pub);Remote;Host;SSHKey(Priv);GHLogin
+PROFILE_ENTRY="$GIT_NAME;$GIT_NAME;$GIT_EMAIL;$SSH_KEY_FINAL.pub;origin;github.com;$SSH_KEY_FINAL;$GH_LOGIN"
+
+if [ ! -f "$ACPRC_FILE" ]; then
+    # Si no existe, lo creamos con defaults básicos
+    echo "DAY_START=\"00:00\"" > "$ACPRC_FILE"
+    echo "REFS_LABEL=\"Conteo: commit\"" >> "$ACPRC_FILE"
+    echo "DAILY_GOAL=10" >> "$ACPRC_FILE"
+    echo "PROFILES=()" >> "$ACPRC_FILE"
+fi
+
+# Buscamos si el email ya existe para no duplicar
+if grep -q "$GIT_EMAIL" "$ACPRC_FILE"; then
+    log_success "Tu perfil ya existía en el menú de identidades."
+else
+    echo "" >> "$ACPRC_FILE"
+    echo "# Auto-agregado por setup-wizard" >> "$ACPRC_FILE"
+    # Usamos sintaxis de bash append array: PROFILES+=("...")
+    echo "PROFILES+=(\"$PROFILE_ENTRY\")" >> "$ACPRC_FILE"
+    log_success "Perfil agregado exitosamente al menú."
+fi
+
+# ==============================================================================
+# PASO 6: VALIDACIÓN FINAL Y BOOTSTRAP
 # ==============================================================================
 gum spin --spinner dot --title "Validando conexión SSH final..." -- sleep 1
 
@@ -250,10 +272,8 @@ if ssh -T git@github.com -o StrictHostKeyChecking=accept-new 2>&1 | grep -q "suc
     log_success "Conexión verificada: Acceso Correcto."
 else
     log_warn "No pudimos validar la conexión automáticamente."
-    log_info "Si acabas de subir la llave, espera unos segundos y prueba 'ssh -T git@github.com'."
 fi
 
-# Bootstrap .env
 if [ ! -f ".env" ]; then
     if [ -f ".env.example" ]; then
         cp .env.example .env
@@ -268,6 +288,7 @@ touch "$MARKER_FILE"
 gum style \
     --border double --margin "1 2" --padding "1 4" --border-foreground 212 --foreground 212 \
     "🎉 ¡TODO LISTO!" \
-    "Usuario: $GIT_NAME"
+    "Usuario: $GIT_NAME" \
+    "Agregado al menú: SÍ"
 
 echo "💡 Tip: Usa 'git feature <nombre>' para empezar."

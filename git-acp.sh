@@ -8,6 +8,9 @@ echo "🟢 [ERD-ECOSYSTEM] Ejecutando git-acp integrado..."
 
 # --- Detección inteligente de configuración ---
 PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo ".")"
+
+# CAMBIO: Agregamos prioridad a la carpeta .devtools
+DEVTOOLS_CONFIG="${PROJECT_ROOT}/.devtools/.git-acprc"
 LOCAL_CONFIG="${PROJECT_ROOT}/.git-acprc"
 USER_CONFIG="${HOME}/scripts/.git-acprc"
 
@@ -20,8 +23,11 @@ for __a in "$@"; do
 done
 (( FORCE )) && export DISABLE_NO_ACP_GUARD=1
 
-# 1) Carga de Configuración (Prioridad: Local > Usuario)
-if [ -f "$LOCAL_CONFIG" ]; then
+# 1) Carga de Configuración (Prioridad: Devtools > Root > Usuario)
+if [ -f "$DEVTOOLS_CONFIG" ]; then
+  # shellcheck disable=SC1090
+  source "$DEVTOOLS_CONFIG"
+elif [ -f "$LOCAL_CONFIG" ]; then
   # shellcheck disable=SC1090
   source "$LOCAL_CONFIG"
 elif [ -f "$USER_CONFIG" ]; then
@@ -140,7 +146,7 @@ ensure_key_added() {
   key="${key/#$HOME\/~\//$HOME/}"
 
   if [[ ! -f "$key" ]]; then
-    echo "🔴 Llave no encontrada: $key"
+    # Si no es archivo, quizás es una llave GPG legacy, ignoramos error SSH
     return 1
   fi
 
@@ -266,6 +272,26 @@ if ! $SIMPLE_MODE; then
       echo "✅ Usando la identidad de '$display_name' (firmado como '$git_name')."
       git config user.name "$git_name"
       git config user.email "$git_email"
+
+      # --- FIX: Detección inteligente de formato de firma (GPG vs SSH) ---
+      # Si la llave termina en .pub, empieza con ssh- o es una ruta absoluta, asumimos SSH
+      if [[ "$gpg_key" == *".pub" ]] || [[ "$gpg_key" == "ssh-"* ]] || [[ "$gpg_key" == "/"* ]]; then
+          git config gpg.format ssh
+          
+          # Asegurarnos de que el ssh-agent tenga la llave privada asociada
+          if [[ -n "$ssh_key_path" ]]; then
+             IdentityFile="${ssh_key_path}"
+             ensure_key_added "$IdentityFile" || true
+          elif [[ "$gpg_key" == "/"* ]]; then
+             # Intentar deducir la privada quitando el .pub si la gpg_key es ruta
+             IdentityFile="${gpg_key%.pub}"
+             ensure_key_added "$IdentityFile" || true
+          fi
+      else
+          # Si no parece SSH, asumimos que es un ID de GPG clásico
+          git config gpg.format openpgp
+      fi
+      
       git config commit.gpgsign true
       git config user.signingkey "${gpg_key:-}" 2>/dev/null || true
 
