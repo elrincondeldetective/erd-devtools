@@ -2,7 +2,6 @@
 # /webapps/erd-ecosystem/.devtools/git-acp.sh
 set -euo pipefail
 IFS=$'\n\t'
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Mensaje de confirmación de script integrado
 echo "🟢 [ERD-ECOSYSTEM] Ejecutando git-acp integrado..."
@@ -47,25 +46,9 @@ GH_DEFAULT_VISIBILITY="${GH_DEFAULT_VISIBILITY:-private}"
 # --- Feature/PR policy (defaults) ---
 ENFORCE_FEATURE_BRANCH="${ENFORCE_FEATURE_BRANCH:-true}"   # exige feature/*
 AUTO_RENAME_TO_FEATURE="${AUTO_RENAME_TO_FEATURE:-true}"   # renombra si no cumple
+PR_PROMPT_AFTER_PUSH="${PR_PROMPT_AFTER_PUSH:-true}"       # pregunta si crear PR al subir
 PR_BASE_BRANCH="${PR_BASE_BRANCH:-dev}"                    # PR siempre hacia dev
-
-# --- Post-push flow: CI local (nativo) -> act -> PR ---
-POST_PUSH_FLOW="${POST_PUSH_FLOW:-true}"
-
-# Detección automática basada en tu estructura de directorios
-if [[ -f "${PROJECT_ROOT}/apps/pmbok/Taskfile.yaml" ]]; then
-    # CI Nativo para PMBOK
-    NATIVE_CI_CMD="${NATIVE_CI_CMD:-task -d apps/pmbok test}"
-else
-    NATIVE_CI_CMD="${NATIVE_CI_CMD:-task test}"
-fi
-
-# Detección de Act (usando tus Taskfiles corregidos)
-if [[ -f "${PROJECT_ROOT}/.github/workflows/test/Taskfile.yaml" ]]; then
-    ACT_CI_CMD="${ACT_CI_CMD:-task -t .github/workflows/test/Taskfile.yaml trigger}"
-else
-    ACT_CI_CMD="${ACT_CI_CMD:-act}"
-fi
+PR_DRAFT_DEFAULT="${PR_DRAFT_DEFAULT:-false}"              # PR draft por defecto?
 
 # --- Switch Modo Simple vs Pro ---
 SIMPLE_MODE=false
@@ -291,17 +274,21 @@ if ! $SIMPLE_MODE; then
       git config user.email "$git_email"
 
       # --- FIX: Detección inteligente de formato de firma (GPG vs SSH) ---
+      # Si la llave termina en .pub, empieza con ssh- o es una ruta absoluta, asumimos SSH
       if [[ "$gpg_key" == *".pub" ]] || [[ "$gpg_key" == "ssh-"* ]] || [[ "$gpg_key" == "/"* ]]; then
           git config gpg.format ssh
           
+          # Asegurarnos de que el ssh-agent tenga la llave privada asociada
           if [[ -n "$ssh_key_path" ]]; then
              IdentityFile="${ssh_key_path}"
              ensure_key_added "$IdentityFile" || true
           elif [[ "$gpg_key" == "/"* ]]; then
+             # Intentar deducir la privada quitando el .pub si la gpg_key es ruta
              IdentityFile="${gpg_key%.pub}"
              ensure_key_added "$IdentityFile" || true
           fi
       else
+          # Si no parece SSH, asumimos que es un ID de GPG clásico
           git config gpg.format openpgp
       fi
       
@@ -337,170 +324,15 @@ if ! $SIMPLE_MODE; then
   done
   IFS=$'\n\t'
 else
+  # MODO SIMPLE PARA OTROS DEVS
   echo "⚡ Modo Estándar (Sin gestión de identidades avanzada)."
+  # push_target ya se definió como "origin" arriba
 fi
 
-# ——— Helpers de Interfaz y Flujo Post-Push ———
-is_tty() { [[ -t 0 && -t 1 ]]; }
-have_cmd() { command -v "$1" >/dev/null 2>&1; }
-
-ask_yes_no() {
-  local q="$1"
-  if is_tty && have_cmd gum; then gum confirm "$q"; return $?; fi
-  if is_tty; then local ans; read -r -p "$q [S/n]: " ans; ans="${ans:-S}"; [[ "$ans" =~ ^[Ss]$ ]]; return $?; fi
-  return 1
-}
-
-run_cmd() {
-  local cmd="$1"
-  [[ -n "$cmd" ]] || return 2
-  echo; echo "▶️ Ejecutando: $cmd"
-  set +e; eval "$cmd"; local rc=$?; set -e
-  return $rc
-}
-
-post_push_flow() {
-  local head="$1" base="$2"
-  is_tty || return 0
-  [[ "$POST_PUSH_FLOW" == "true" ]] || return 0
-  
-  # Solo activar flujo si estamos en una rama feature
-  if [[ "$head" != feature/* ]]; then return 0; fi
-
-  local native_ok="skip"
-  
-  # 1. CI NATIVO
-  echo
-  if ask_yes_no "¿Quieres correr en local el CI ‘nativo’ del commit que acabas de subir a GitHub?"; then
-    if [[ -z "$NATIVE_CI_CMD" ]]; then
-       echo "❌ No tengo comando para CI Nativo. Configura NATIVE_CI_CMD."
-       return 1
-    fi
-    # Exponemos variables para que el test nativo encuentre la DB de K8s local (si existe)
-    # NodePort 30432 es el definido en tu service.yaml local
-    export DB_HOST="127.0.0.1"
-    export DB_PORT="30432" 
-    export DB_NAME="pmbok_db"
-    export DB_USER="pmbok_user"
-    export DB_PASSWORD="secretpassword"
-    
-    if run_cmd "$NATIVE_CI_CMD"; then
-       native_ok="ok"
-    else
-       echo "❌ CI nativo falló. Se aborta el flujo (no se ofrece PR)."
-       return 1
-    fi
-  fi
-
-  # 2. CI con ACT (Solo si native pasó o se saltó)
-  if [[ "$native_ok" == "ok" || "$native_ok" == "skip" ]]; then
-      echo
-      if ask_yes_no "¿Quieres correr el CI con act (GitHub Actions en local)?"; then
-         if [[ -z "$ACT_CI_CMD" ]]; then
-            echo "❌ No encontré configuración para 'act'."
-            return 1
-         fi
-         if ! run_cmd "$ACT_CI_CMD"; then
-            echo "❌ CI con act falló. Se aborta el flujo (no se ofrece PR)."
-            return 1
-         fi
-      fi
-  fi
-
-  # 3. CREAR PR
-  echo
-  if ask_yes_no "¿Quieres crear un PR para finalizar el trabajo y enviarlo a revisión?"; then
-    if "${SCRIPT_DIR}/git-pr.sh"; then
-      echo "Gracias por el trabajo, en breve se revisa."
-      return 0
-    fi
-    echo "⚠️ Hubo un problema creando el PR."
-    return 1
-  else
-    echo "Listo, sigue trabajando en más funcionalidades."
-  fi
-}
-
-# ——— Feature/PR logic ———
-is_protected_branch() {
-  case "$1" in main|master|dev|staging) return 0 ;; *) return 1 ;; esac
-}
-
-sanitize_feature_suffix() {
-  local b="$1"; b="${b//\//-}"; b="${b// /-}"; b="${b//[^a-zA-Z0-9._-]/-}"; b="$(echo "$b" | sed -E 's/-+/-/g')"; echo "$b"
-}
-suggest_feature_branch() { echo "feature/$(sanitize_feature_suffix "$1")"; }
-unique_branch_name() {
-  local name="$1"; if ! git show-ref --verify --quiet "refs/heads/$name"; then echo "$name"; return 0; fi
-  local i=1; while git show-ref --verify --quiet "refs/heads/${name}-${i}"; do ((i++)); done; echo "${name}-${i}"
-}
-
-ensure_feature_branch_or_rename() {
-  local branch="$1"
-  if [[ "$branch" == feature/* ]]; then return 0; fi
-  if [[ "$ENFORCE_FEATURE_BRANCH" != "true" ]]; then return 0; fi
-  if is_protected_branch "$branch"; then return 0; fi # Dejamos que ensure_feature_branch_before_commit maneje esto
-
-  local new_branch
-  new_branch="$(suggest_feature_branch "$branch")"
-  echo "⚠️  Tu rama actual NO cumple la política feature/**"
-  echo "   Rama actual: $branch"
-  echo "   Sugerencia : $new_branch"
-
-  if [[ "$AUTO_RENAME_TO_FEATURE" == "true" ]]; then
-    if is_tty; then
-      if ! ask_yes_no "¿Renombrar automáticamente a '$new_branch'?"; then
-         echo "✋ Cancelado."; exit 2
-      fi
-    fi
-    git branch -m "$branch" "$new_branch"
-    echo "✅ Rama renombrada localmente: $branch -> $new_branch"
-  else
-    echo "✋ Abortado. Crea una rama feature/* con: git feature <nombre>"
-    exit 2
-  fi
-}
-
-ensure_feature_branch_before_commit() {
-  local branch
-  branch="$(git branch --show-current 2>/dev/null || echo "")"
-
-  # Caso: Head desacoplado
-  if [[ -z "$branch" ]]; then
-    echo "⚠️ HEAD desacoplado. Creando una rama feature/* para commitear..."
-    local short_sha
-    short_sha="$(git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M%S)"
-    git checkout -b "feature/detached-${short_sha}"
-    return 0
-  fi
-
-  [[ "$ENFORCE_FEATURE_BRANCH" == "true" ]] || return 0
-  [[ "$branch" == feature/* ]] && return 0
-
-  # Caso: Rama protegida (main, dev...)
-  if is_protected_branch "$branch"; then
-    local short_sha new_branch
-    short_sha="$(git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M%S)"
-    new_branch="$(unique_branch_name "feature/${branch}-${short_sha}")"
-
-    echo "🧹 Estás en rama protegida '$branch'. Moviendo el trabajo a '$new_branch' ANTES del commit..."
-    git checkout -b "$new_branch"
-    
-    # Intentamos restaurar la rama protegida para evitar accidentes
-    local upstream=""
-    upstream="$(git rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>/dev/null || true)"
-    if [[ -n "$upstream" ]]; then
-        git branch -f "$branch" "$upstream" >/dev/null 2>&1 || true
-    fi
-    return 0
-  fi
-
-  # Caso: Rama normal mal nombrada
-  ensure_feature_branch_or_rename "$branch"
-}
-
 # ——— Flags/args ———
-NO_PUSH=false; DRY_RUN=false; ARGS=()
+NO_PUSH=false
+DRY_RUN=false
+ARGS=()
 while (( $# )); do
   case "$1" in
     --no-push) NO_PUSH=true; shift ;;
@@ -511,9 +343,17 @@ while (( $# )); do
 done
 
 if [ ${#ARGS[@]} -eq 0 ] && ! $DRY_RUN; then
+  # Si estamos en modo simple, usamos read simple, si no, asumimos interactivo
   INTERACTIVE=true
-  if $SIMPLE_MODE; then echo "📝 Escribe tu mensaje de commit:"; read -r MSG; INTERACTIVE=false; fi
-else INTERACTIVE=false; MSG="${ARGS[*]}"; fi
+  if $SIMPLE_MODE; then
+    echo "📝 Escribe tu mensaje de commit:"
+    read -r MSG
+    INTERACTIVE=false
+  fi
+else
+  INTERACTIVE=false
+  MSG="${ARGS[*]}"
+fi
 
 # ——— Funciones commit/push ———
 get_today()   { date +%F; }
@@ -524,57 +364,253 @@ do_commit() {
   local count="$2"
   local timestamp
   timestamp="$(date '+%Y-%m-%d %H:%M')"
+
   git add .
-  if $INTERACTIVE; then git commit
-  else git commit -m "$msg" -m "📅 Fecha: $timestamp" -m "${REFS_LABEL} #$count"; fi
+  if $INTERACTIVE; then
+    # Si no hay mensaje en argumentos, git commit abre el editor
+    # (En interactivo no inyectamos la fecha automáticamente para no complicar el editor)
+    git commit
+  else
+    # Aquí inyectamos el mensaje del usuario, la FECHA y el CONTEO
+    git commit -m "$msg" -m "📅 Fecha: $timestamp" -m "${REFS_LABEL} #$count"
+  fi
+}
+
+# ——— Feature/PR policy helpers ———
+is_tty() { [[ -t 0 && -t 1 ]]; }
+
+is_protected_branch() {
+  case "$1" in
+    main|master|dev|staging) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Convierte cualquier rama "x/y/z" en un sufijo seguro para feature/*
+# porque tu validate-pr actual usa feature/* (sin **), y bash no matchea '/' con '*'
+sanitize_feature_suffix() {
+  local b="$1"
+  b="${b//\//-}"              # / -> -
+  b="${b// /-}"               # espacios -> -
+  b="${b//[^a-zA-Z0-9._-]/-}" # caracteres raros -> -
+  # compacta múltiples '-' (opcional)
+  b="$(echo "$b" | sed -E 's/-+/-/g')"
+  echo "$b"
+}
+
+suggest_feature_branch() {
+  local current="$1"
+  local suffix
+  suffix="$(sanitize_feature_suffix "$current")"
+  echo "feature/${suffix}"
+}
+
+unique_branch_name() {
+  local name="$1"
+  if ! git show-ref --verify --quiet "refs/heads/$name"; then
+    echo "$name"
+    return 0
+  fi
+
+  local i=1
+  while git show-ref --verify --quiet "refs/heads/${name}-${i}"; do
+    ((i++))
+  done
+  echo "${name}-${i}"
+}
+
+ensure_feature_branch_or_rename() {
+  local branch="$1"
+
+  # Si ya cumple, OK
+  if [[ "$branch" == feature/* ]]; then
+    return 0
+  fi
+
+  # Si no exigimos, salir
+  if [[ "$ENFORCE_FEATURE_BRANCH" != "true" ]]; then
+    return 0
+  fi
+
+  # --- Caso A: Estás en rama protegida (dev/main/staging/master) ---
+  # En este caso NO abortamos: movemos el trabajo a una rama feature/*
+  if is_protected_branch "$branch"; then
+    local upstream=""
+    upstream="$(git rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>/dev/null || true)"
+
+    local short_sha
+    short_sha="$(git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M%S)"
+
+    # Nota: usamos feature/<branch>-<sha> para evitar colisiones y evitar '/' extra
+    local candidate new_branch
+    candidate="feature/${branch}-${short_sha}"
+    new_branch="$(unique_branch_name "$candidate")"
+
+    echo "🧹 Estás en rama protegida '$branch'. Moviendo el trabajo a '$new_branch'..."
+    git checkout -b "$new_branch"
+
+    # Opcional: restaurar la rama protegida local a su upstream (para evitar push accidental)
+    if [[ -n "$upstream" ]]; then
+      git branch -f "$branch" "$upstream" >/dev/null 2>&1 || true
+      echo "🔒 Rama local '$branch' restaurada a '$upstream' (para evitar push accidental)."
+    else
+      echo "ℹ️  Nota: '$branch' no tiene upstream configurado; no lo pude restaurar automáticamente."
+      echo "   Si quieres restaurarla luego:"
+      echo "   git fetch origin $branch && git branch -f $branch origin/$branch"
+    fi
+
+    return 0
+  fi
+
+  # --- Caso B: Rama normal (no protegida) pero NO es feature/* ---
+  local new_branch
+  new_branch="$(suggest_feature_branch "$branch")"
+
+  echo "⚠️  Tu rama actual NO cumple la política feature/*"
+  echo "   Rama actual: $branch"
+  echo "   Sugerencia : $new_branch"
+
+  if [[ "$AUTO_RENAME_TO_FEATURE" == "true" ]]; then
+    if is_tty; then
+      read -r -p "¿Renombrar automáticamente a '$new_branch'? [S/n]: " ans
+      ans="${ans:-S}"
+      if [[ ! "$ans" =~ ^[Ss]$ ]]; then
+        echo "✋ Cancelado. Crea una rama feature/* con: git feature <nombre>"
+        exit 2
+      fi
+    fi
+
+    git branch -m "$branch" "$new_branch"
+    echo "✅ Rama renombrada localmente: $branch -> $new_branch"
+  else
+    echo "✋ Abortado. Crea una rama feature/* con: git feature <nombre>"
+    exit 2
+  fi
+}
+
+
+gh_ready() {
+  command -v gh >/dev/null 2>&1 || return 1
+  gh auth status >/dev/null 2>&1 || return 1
+  return 0
+}
+
+pr_exists_for_branch() {
+  local head="$1" base="$2"
+  GH_PAGER=cat gh pr list --state open --head "$head" --base "$base" --json number --jq 'length' 2>/dev/null | grep -qE '^[1-9]'
+}
+
+offer_create_pr_if_needed() {
+  local head="$1" base="$2"
+
+  [[ "$PR_PROMPT_AFTER_PUSH" == "true" ]] || return 0
+  [[ "$head" == feature/* ]] || return 0
+  is_tty || return 0
+
+  if ! gh_ready; then
+    echo "ℹ️  No puedo ofrecer PR automático porque 'gh' no está listo."
+    echo "   Instala/login: gh auth login"
+    return 0
+  fi
+
+  if pr_exists_for_branch "$head" "$base"; then
+    return 0
+  fi
+
+  echo
+  echo "🟢 Ya subiste la rama '$head' a GitHub."
+  read -r -p "¿Quieres abrir el PR hacia '$base' ahora? [S/n]: " ans
+  ans="${ans:-S}"
+  if [[ "$ans" =~ ^[Ss]$ ]]; then
+    local draft_flag=()
+    [[ "$PR_DRAFT_DEFAULT" == "true" ]] && draft_flag+=(--draft)
+
+    echo "🚀 Creando PR: $head -> $base"
+    GH_PAGER=cat gh pr create --base "$base" --head "$head" --fill "${draft_flag[@]}"
+  else
+    echo "👌 OK. Puedes abrirlo luego con: git pr"
+  fi
 }
 
 do_push() {
   local remote="$1"
   local branch
   local target_ref
+
+  # 1. Intentar obtener el nombre de la rama actual
   branch="$(git branch --show-current 2>/dev/null || echo "")"
-  target_ref="$branch"
+
+  # 2. Lógica para Submódulos / HEAD Desacoplado
+  if [[ -z "$branch" ]]; then
+    echo "⚠️  HEAD desacoplado detectado (común en submódulos)."
+
+    # ✅ Preferencia: una rama configurable (por defecto: dev)
+    preferred="${ACP_DETACHED_BRANCH:-${DEFAULT_BRANCH:-dev}}"
+
+    # Si la rama preferida existe en el remoto, úsala
+    if git ls-remote --exit-code --heads "$remote" "$preferred" >/dev/null 2>&1; then
+      branch="$preferred"
+    else
+      # Fallback: usar la rama HEAD del remoto (origin/HEAD -> origin/<branch>)
+      head_ref="$(git symbolic-ref -q "refs/remotes/${remote}/HEAD" 2>/dev/null || true)"
+      head_branch="${head_ref##*/}"
+      branch="${head_branch:-main}"
+    fi
+
+    echo "🔄 Asumiendo destino hacia rama '${branch}'..."
+    target_ref="HEAD:refs/heads/${branch}"
+  else
+    # ✅ Política: obligar feature/* antes del push (y renombrar si hace falta)
+    ensure_feature_branch_or_rename "$branch"
+
+    # Si renombramos, vuelve a leer nombre actual y úsalo como destino real
+    branch="$(git branch --show-current 2>/dev/null || echo "")"
+    target_ref="$branch"
+  fi
+
   echo "📡 Enviando a '$remote' (Ref: $target_ref)..."
 
-  # Helper para llamar al flow después del push exitoso
-  success_handler() {
-      post_push_flow "$branch" "$PR_BASE_BRANCH"
-      return 0
-  }
-
+  # Si no hay upstream, intenta setearlo (solo cuando target_ref es una rama normal)
   if [[ "$target_ref" == "$branch" ]]; then
     if ! git rev-parse --abbrev-ref --symbolic-full-name "@{u}" >/dev/null 2>&1; then
-      if git push -u "$remote" "$target_ref"; then success_handler; return 0; fi
+      if git push -u "$remote" "$target_ref"; then
+        offer_create_pr_if_needed "$branch" "$PR_BASE_BRANCH"
+        return 0
+      fi
     fi
   fi
-  if git push "$remote" "$target_ref"; then success_handler; return 0; fi
 
-  echo "⚠️  El push fue rechazado. Intentando pull --rebase..."
+  # Intento 1: Push normal
+  if git push "$remote" "$target_ref"; then
+    offer_create_pr_if_needed "$branch" "$PR_BASE_BRANCH"
+    return 0
+  fi
+
+  echo "⚠️  El push fue rechazado (posiblemente hay cambios remotos nuevos)."
+  echo "🔄 Iniciando auto-reparación: 'git pull --rebase'..."
+
+  # Intento 2: Pull rebase y luego push
+  # Nota: Hacemos pull de la rama destino (branch) para actualizar nuestro HEAD desacoplado
   if git pull --rebase "$remote" "$branch"; then
-      echo "✅ Rebase exitoso. Reintentando push..."
+      echo "✅ Rebase exitoso. Sincronizando tags y reintentando push..."
       git fetch --tags --force "$remote"
       git push "$remote" "$target_ref"
-      success_handler; return 0
+      offer_create_pr_if_needed "$branch" "$PR_BASE_BRANCH"
   else
-      echo "❌ Conflicto irresoluble. Resuélvelo y haz push manual."
+      echo "❌ Conflicto irresoluble automáticamente."
+      echo "🛠  Por favor, resuelve los conflictos manualmente y luego ejecuta:"
+      echo "    git push $remote $target_ref"
       exit 1
   fi
 }
 
-# ——— Lógica Principal ———
+# ——— Lógica ———
 TODAY=$(get_today)
 COUNT_BEFORE=$(count_today "$TODAY")
 NEXT=$((COUNT_BEFORE + 1))
 
 if ! $DRY_RUN; then
-  # Paso 1: Asegurar rama feature ANTES de commitear
-  ensure_feature_branch_before_commit
-  
-  # Paso 2: Commit
   do_commit "${MSG:-}" "$NEXT"
-  
-  # Paso 3: Push + Flow Interactivo
   if ! $NO_PUSH; then
     do_push "$push_target"
   else
@@ -588,8 +624,12 @@ REMAIN=$(( DAILY_GOAL - TOTAL_TODAY ))
 PERCENT=$(( DAILY_GOAL > 0 ? (TOTAL_TODAY * 100 / DAILY_GOAL) : 100 ))
 (( PERCENT > 100 )) && PERCENT=100
 
-BAR_LENGTH=30; FILLED=$(( PERCENT * BAR_LENGTH / 100 )); EMPTY=$(( BAR_LENGTH - FILLED ))
-bar=""; for ((i=0; i<FILLED; i++)); do bar+="#"; done; for ((i=0; i<EMPTY;  i++)); do bar+="-"; done
+BAR_LENGTH=30
+FILLED=$(( PERCENT * BAR_LENGTH / 100 ))
+EMPTY=$(( BAR_LENGTH - FILLED ))
+bar=""
+for ((i=0; i<FILLED; i++)); do bar+="#"; done
+for ((i=0; i<EMPTY;  i++)); do bar+="-"; done
 
 GREEN='\033[0;32m'; NC='\033[0m'
 echo
@@ -598,4 +638,7 @@ echo -e "│ 📊 Commits hoy: ${TOTAL_TODAY}/${DAILY_GOAL} (${PERCENT}%)"
 echo -e "│ Progress : |${bar}|"
 echo -e "│ Faltan   : ${REMAIN} commit(s) para la meta diaria"
 echo -e "└─────────────────────────────────────────────${NC}"
-if $DRY_RUN; then echo -e "${GREEN}⚗️  Simulación (--dry-run).${NC}"; fi
+
+if $DRY_RUN; then
+  echo -e "${GREEN}⚗️  Simulación (--dry-run); no se hizo commit ni push.${NC}"
+fi
