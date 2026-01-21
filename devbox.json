@@ -39,33 +39,34 @@
   },
   "shell": {
     "init_hook": [
-      "# --- 1. Configuración de Alias Git (Se mantiene igual, usa ruta absoluta de Git) ---",
+      "# --- 1. Configuración de Alias Git ---",
       "git config alias.acp '!f(){ sp=\"$(git rev-parse --show-superproject-working-tree 2>/dev/null || true)\"; root=\"${sp:-$(git rev-parse --show-toplevel)}\"; bash \"$root/.devtools/git-acp.sh\" \"$@\"; }; f'",
       "git config alias.gp '!f(){ sp=\"$(git rev-parse --show-superproject-working-tree 2>/dev/null || true)\"; root=\"${sp:-$(git rev-parse --show-toplevel)}\"; bash \"$root/.devtools/git-gp.sh\" \"$@\"; }; f'",
       "git config alias.rp '!f(){ sp=\"$(git rev-parse --show-superproject-working-tree 2>/dev/null || true)\"; root=\"${sp:-$(git rev-parse --show-toplevel)}\"; bash \"$root/.devtools/git-rp.sh\" \"$@\"; }; f'",
       "git config alias.promote '!f(){ sp=\"$(git rev-parse --show-superproject-working-tree 2>/dev/null || true)\"; root=\"${sp:-$(git rev-parse --show-toplevel)}\"; bash \"$root/.devtools/git-promote.sh\" \"$@\"; }; f'",
       "git config alias.feature '!f(){ sp=\"$(git rev-parse --show-superproject-working-tree 2>/dev/null || true)\"; root=\"${sp:-$(git rev-parse --show-toplevel)}\"; bash \"$root/.devtools/git-feature.sh\" \"$@\"; }; f'",
       "git config alias.pr '!f(){ sp=\"$(git rev-parse --show-superproject-working-tree 2>/dev/null || true)\"; root=\"${sp:-$(git rev-parse --show-toplevel)}\"; bash \"$root/.devtools/git-pr.sh\" \"$@\"; }; f'",
-      "# --- 2. The Gatekeeper: Setup Wizard (Ruta Corregida: ahora es vecino) ---",
-      "bash ./setup-wizard.sh",
+      "# --- 2. The Gatekeeper: Setup Wizard ---",
+      "# Ruta relativa a la raíz porque este archivo es incluido",
+      "bash .devtools/setup-wizard.sh",
       "# --- 3. Mensajes de Bienvenida ---",
       "echo '🚀 ERD Ecosystem Devbox Loaded!'",
       "echo '✅ Database credentials & SSL settings applied automatically.'",
       "echo '💡 Try running: devbox run backend'",
       "# --- 4. Menu Simplificado ---",
       "if [[ -t 0 && -t 1 ]]; then DEVX_CHOICE=\"\"; if command -v gum >/dev/null 2>&1; then DEVX_CHOICE=\"$(gum choose --header \"Selecciona tu Rol:\" \"Admin\" \"Dev\" \"Ops\")\"; else echo \"Selecciona tu Rol:\"; select opt in \"Admin\" \"Dev\" \"Ops\"; do DEVX_CHOICE=\"$opt\"; break; done; fi; case \"$DEVX_CHOICE\" in \"Admin\") export DEVBOX_ENV_NAME=\"ERD\" ;; \"Dev\") export DEVBOX_ENV_NAME=\"PMBOK\" ;; \"Ops\") export DEVBOX_ENV_NAME=\"GITOPS\" ;; *) export DEVBOX_ENV_NAME=\"${DEVBOX_ENV_NAME:-DEVBOX}\" ;; esac; devx() { export DEVBOX_ENV_NAME=\"$1\"; }; fi",
-      "# --- 5. Prompt: Starship (Busca en ../ si no está aquí) ---",
-      "if command -v starship >/dev/null 2>&1; then if [ -f \"$PWD/../.starship.toml\" ]; then export STARSHIP_CONFIG=\"$PWD/../.starship.toml\"; else export STARSHIP_CONFIG=\"$PWD/.starship.toml\"; fi; if [[ -n \"${ZSH_VERSION:-}\" ]]; then eval \"$(starship init zsh)\"; else eval \"$(starship init bash)\"; fi; else if [[ -n \"${ZSH_VERSION:-}\" ]]; then export PROMPT=\"(devbox ${DEVBOX_ENV_NAME}) ${PROMPT}\"; else export PS1=\"(devbox ${DEVBOX_ENV_NAME}) ${PS1}\"; fi; fi"
+      "# --- 5. Prompt: Starship ---",
+      "if command -v starship >/dev/null 2>&1; then export STARSHIP_CONFIG=\"$PWD/.starship.toml\"; if [[ -n \"${ZSH_VERSION:-}\" ]]; then eval \"$(starship init zsh)\"; else eval \"$(starship init bash)\"; fi; else if [[ -n \"${ZSH_VERSION:-}\" ]]; then export PROMPT=\"(devbox ${DEVBOX_ENV_NAME}) ${PROMPT}\"; else export PS1=\"(devbox ${DEVBOX_ENV_NAME}) ${PS1}\"; fi; fi"
     ]
   },
   "scripts": {
-    "backend": "cd ../apps/pmbok/backend && chmod +x entrypoint.sh && poetry run ./entrypoint.sh python manage.py runserver 0.0.0.0:8000",
-    "frontend": "cd ../apps/pmbok/frontend && npm run dev",
-    "setup-k8s": "../devops/scripts/setup-cluster.sh",
-    "acp": "bash ./git-acp.sh",
-    "gp": "bash ./git-gp.sh",
-    "rp": "bash ./git-rp.sh",
-    "promote": "bash ./git-promote.sh",
-    "feature": "bash ./git-feature.sh"
+    "backend": "cd apps/pmbok/backend && chmod +x entrypoint.sh && poetry run ./entrypoint.sh python manage.py runserver 0.0.0.0:8000",
+    "frontend": "cd apps/pmbok/frontend && npm run dev",
+    "setup-k8s": "./devops/scripts/setup-cluster.sh",
+    "acp": "bash ./.devtools/git-acp.sh",
+    "gp": "bash ./.devtools/git-gp.sh",
+    "rp": "bash ./.devtools/git-rp.sh",
+    "promote": "bash ./.devtools/git-promote.sh",
+    "feature": "bash ./.devtools/git-feature.sh"
   }
 }
