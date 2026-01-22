@@ -1,451 +1,265 @@
 #!/usr/bin/env bash
-# /webapps/erd-ecosystem/.devtools/git-promote.sh
+# /webapps/erd-ecosystem/.devtools/bin/git-promote.sh
 set -euo pipefail
+IFS=$'\n\t'
 
-# --- CONFIGURACIÓN ---
-# Archivo donde release-please guarda la verdad
-VERSION_FILE="apps/pmbok/.github/utils/.release-please-manifest.json"
-# Servicio principal para versionar el repo (usualmente backend)
-MAIN_SERVICE="backend"
+# ==============================================================================
+# 1. BOOTSTRAP DE LIBRERÍAS
+# ==============================================================================
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="${SCRIPT_DIR}/../lib"
 
-# Colores
-GREEN='\033[0;32m'; BLUE='\033[0;34m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; NC='\033[0m'
+source "${LIB_DIR}/utils.sh"       # Logs, UI (ask_yes_no, log_info...)
+source "${LIB_DIR}/config.sh"      # Config Global
+source "${LIB_DIR}/git-core.sh"    # Git Ops (ensure_clean, update_branch...)
+source "${LIB_DIR}/release-flow.sh" # Versioning (RCs, tags, notes...)
 
-CURRENT_BRANCH=$(git branch --show-current)
-TARGET_ENV="${1:-}"
+# ==============================================================================
+# 2. NUEVA FUNCIONALIDAD: SYNC MODE (FAST TRACK)
+# ==============================================================================
 
-# --- HELPERS ---
+promote_sync_all() {
+    local current_branch
+    current_branch=$(git branch --show-current)
+    
+    # 1. Definir Fuente de Verdad
+    # Por defecto es feature/dev-update, pero si estás en otra feature, te pregunta.
+    local source_branch="feature/dev-update"
 
-get_current_version() {
-    if [ -f "$VERSION_FILE" ]; then
-        # Extrae la versión del backend (ej: 0.6.1) usando grep/sed para no depender de jq si no quieres
-        grep "\"$MAIN_SERVICE\":" "$VERSION_FILE" | sed -E 's/.*: "(.*)".*/\1/'
+    if [[ "$current_branch" == feature/* && "$current_branch" != "$source_branch" ]]; then
+        if ask_yes_no "¿Usar rama actual '$current_branch' como fuente de verdad?"; then
+            source_branch="$current_branch"
+        fi
+    fi
+
+    echo
+    log_info "🔄 INICIANDO SYNC (FAST TRACK)"
+    log_info "   Fuente: $source_branch -> dev -> staging -> main"
+    echo
+
+    ensure_clean_git
+
+    # 2. Asegurar que tenemos la última versión de la fuente
+    if [[ "$current_branch" != "$source_branch" ]]; then
+        update_branch_from_remote "$source_branch"
     else
-        echo "0.0.0"
-    fi
-}
-
-generate_ai_prompt() {
-    local from_branch=$1
-    local to_branch=$2
-    local diff_stat
-    local commit_log
-    
-    echo -e "${BLUE}🤖 Generando prompt para Release Notes...${NC}"
-    
-    diff_stat=$(git diff --stat "$to_branch..$from_branch")
-    commit_log=$(git log --pretty=format:"- %s (%an)" "$to_branch..$from_branch")
-    
-    cat <<EOF
---------------------------------------------------------------------------------
-COPIA ESTE PROMPT PARA TU IA:
---------------------------------------------------------------------------------
-Actúa como un Release Manager experto.
-Genera unas Release Notes profesionales en Markdown para la versión que estamos desplegando.
-
-Contexto:
-- Origen: $from_branch
-- Destino: $to_branch
-
-Cambios (Commits):
-$commit_log
-
-Archivos afectados:
-$diff_stat
-
-Instrucciones:
-1. Agrupa los cambios por tipo (Features, Fixes, Chore).
-2. Destaca lo más importante para el usuario final.
-3. Usa un tono técnico pero claro.
---------------------------------------------------------------------------------
-EOF
-    echo -e "${BLUE}--------------------------------------------------------------------------------${NC}"
-    read -r -p "Presiona ENTER cuando hayas copiado el prompt para continuar..."
-}
-
-# --- SOLUCIONES AGREGADAS: VALIDACIÓN DE TAGS + CAPTURA SEGURA DE RELEASE NOTES + SUBMODULE SYNC ---
-
-valid_tag() {
-    local t="$1"
-    # check-ref-format es la forma “oficial” de validar un tag; evita espacios y caracteres inválidos
-    git check-ref-format --allow-onelevel "refs/tags/$t" >/dev/null 2>&1
-}
-
-capture_release_notes() {
-    local outfile="$1"
-
-    # Si tienes gum (devbox lo trae), esto es lo más cómodo para pegar sin romper nada
-    if command -v gum >/dev/null 2>&1; then
-        gum write \
-            --width 120 \
-            --height 25 \
-            --placeholder "Pega aquí las Release Notes (Markdown). Guarda y cierra para continuar..." \
-            > "$outfile"
-        return 0
+        git pull origin "$source_branch"
     fi
 
-    # Fallback: editor
-    if [[ -n "${EDITOR:-}" ]]; then
-        "${EDITOR}" "$outfile"
-        return 0
-    fi
+    # 3. Cascada de Promoción
+    for target in dev staging main; do
+        log_info "🚀 Propagando a ${target^^}..." # ${target^^} lo pone en mayúsculas
+        
+        # Actualizamos target (fetch + checkout + pull)
+        update_branch_from_remote "$target"
+        
+        # Merge de la fuente
+        # Usamos --no-edit para aceptar el mensaje por defecto o pasamos uno custom
+        git merge "$source_branch" -m "chore(sync): merge $source_branch into $target"
+        
+        git push origin "$target"
+    done
 
-    # Fallback final: pegar hasta Ctrl-D (EOF)
-    echo "Pega las Release Notes (Markdown). Termina con Ctrl-D:"
-    cat > "$outfile"
+    # 4. Volver a Casa
+    log_info "🏠 Regresando a $source_branch..."
+    git checkout "$source_branch"
+
+    echo
+    log_success "🎉 Sincronización Completa."
+    log_success "   Todas las ramas (dev, staging, main) están alineadas con $source_branch"
 }
 
-sync_submodules_if_any() {
-    # Si hay submódulos, los sincronizamos para evitar el clásico "M apps/pmbok" por puntero desfasado
-    if [[ -f ".gitmodules" ]]; then
-        git submodule update --init --recursive >/dev/null 2>&1 || true
-    fi
-}
-
-ensure_clean_git() {
-    # Solución: intenta sincronizar submódulos antes de validar limpio
-    sync_submodules_if_any
-
-    if [[ -n $(git status --porcelain) ]]; then
-        echo -e "${RED}❌ Tienes cambios sin guardar. Haz commit o stash primero.${NC}"
-        echo -e "${YELLOW}💡 Tip: si ves 'M apps/pmbok', suele ser un puntero de submódulo desfasado.${NC}"
-        echo -e "${YELLOW}   Prueba: git submodule update --init --recursive${NC}"
-        exit 1
-    fi
-}
-
-# --- SOLUCIÓN AGREGADA: RC1/RC2... EN VEZ DE TIMESTAMP (y evita "orden no encontrada") ---
-
-next_rc_number() {
-    local base_ver="$1"
-    local pattern="v${base_ver}-rc"
-    local max=0
-
-    # Asegura que vemos tags del remoto también
-    git fetch origin --tags --force >/dev/null 2>&1 || true
-
-    # lista tags existentes tipo v0.6.1-rc1, v0.6.1-rc2...
-    while read -r t; do
-        [[ -z "$t" ]] && continue
-        local n="${t#${pattern}}"
-        [[ "$n" =~ ^[0-9]+$ ]] || continue
-        (( n > max )) && max="$n"
-    done < <(git tag -l "${pattern}[0-9]*")
-
-    echo $((max + 1))
-}
-
-# --- SOLUCIÓN AGREGADA: ENCABEZADO FORZADO EN RELEASE NOTES (evita confusión de versión) ---
-
-prepend_release_notes_header() {
-    local outfile="$1"
-    local header="$2"
-    # Fuerza un encabezado consistente (evita que la IA se confunda con el número de versión)
-    {
-        echo "$header"
-        echo ""
-        cat "$outfile"
-    } > "${outfile}.final"
-    mv "${outfile}.final" "$outfile"
-}
-
-# --- NIVELES DE PROMOCIÓN ---
+# ==============================================================================
+# 3. FUNCIONES CLÁSICAS (RELEASE FLOW) - REFACTORIZADAS
+# ==============================================================================
 
 # 1. Feature -> DEV (La "Aplastadora")
 promote_to_dev() {
-    CURRENT_BRANCH=$(git branch --show-current)
+    local current=$(git branch --show-current)
 
-    # Si por error el usuario corre esto desde dev, staging o main, avisar
-    if [[ "$CURRENT_BRANCH" == "dev" || "$CURRENT_BRANCH" == "staging" || "$CURRENT_BRANCH" == "main" ]]; then
-        echo -e "${RED}❌ Estás en '$CURRENT_BRANCH'. Debes estar en una feature branch para promover a Dev.${NC}"
+    if [[ "$current" == "dev" || "$current" == "staging" || "$current" == "main" ]]; then
+        log_error "Estás en '$current'. Debes estar en una feature branch para promover a Dev."
         exit 1
     fi
 
-    echo -e "${YELLOW}🚧 PROMOCIÓN A DEV (Destructiva)${NC}"
-    read -r -p "¿Estás seguro de aplastar 'dev' con '$CURRENT_BRANCH'? [si/N]: " confirm
-    [[ "$confirm" != "si" ]] && exit 0
+    log_warn "🚧 PROMOCIÓN A DEV (Destructiva)"
+    echo "   Esto forzará que 'dev' sea idéntico a '$current'."
+    
+    if ! ask_yes_no "¿Continuar?"; then exit 0; fi
 
     ensure_clean_git
-    git fetch origin dev
-    git checkout dev
 
-    # Solución: sincroniza submódulos tras cambiar rama, para evitar quedar "sucio" por punteros
-    sync_submodules_if_any
-
-    # Reset duro para que dev sea idéntico a feature
-    git reset --hard "$CURRENT_BRANCH"
-
-    echo -e "${BLUE}☁️  Forzando push a dev...${NC}"
+    # Vamos a dev, pero sin hacer pull (true), solo fetch/checkout para resetearlo
+    update_branch_from_remote "dev" "origin" "true"
+    
+    git reset --hard "$current"
+    log_info "☁️  Forzando push a dev..."
     git push origin dev --force
-
-    echo -e "${GREEN}✅ Dev actualizado. El CI detectará cambios y desplegará.${NC}"
-
-    # Opcional: Borrar feature
-    read -r -p "¿Borrar rama '$CURRENT_BRANCH'? [S/n]: " del
-    if [[ ! "$del" =~ ^[Nn]$ ]]; then
-        git branch -D "$CURRENT_BRANCH"
-        git push origin --delete "$CURRENT_BRANCH" 2>/dev/null || true
-    fi
+    
+    log_success "✅ Dev actualizado."
+    
+    # Volver a la rama original
+    git checkout "$current"
 }
 
 # 2. Dev -> STAGING (Release Candidate)
 promote_to_staging() {
     ensure_clean_git
-    CURRENT_BRANCH=$(git branch --show-current)
-
-    # Lógica inteligente: Si no estoy en dev, me cambio automáticamente
-    if [[ "$CURRENT_BRANCH" != "dev" ]]; then
-        echo -e "${YELLOW}🔄 No estás en 'dev'. Cambiando automáticamente...${NC}"
-        git checkout dev
-        sync_submodules_if_any
-        git pull origin dev
+    local current=$(git branch --show-current)
+    
+    if [[ "$current" != "dev" ]]; then
+        log_warn "No estás en 'dev'. Cambiando..."
+        update_branch_from_remote "dev"
     fi
 
-    echo -e "${YELLOW}🔍 Comparando Dev -> Staging${NC}"
+    log_info "🔍 Comparando Dev -> Staging"
     git fetch origin staging
-
-    # Mostrar cambios pendientes
     git log --oneline origin/staging..HEAD
-    echo ""
-
-    # Generar Prompt IA
+    
+    # Generar Prompt y Capturar Notas (usando lib/release-flow.sh)
     generate_ai_prompt "dev" "origin/staging"
 
-    # Solución: Capturar Release Notes de forma segura (sin pegar en consola y sin que zsh ejecute el texto)
+    local tmp_notes
     tmp_notes="$(mktemp -t release-notes.XXXXXX.md)"
     trap 'rm -f "$tmp_notes"' EXIT
-
-    echo -e "${BLUE}📝 Ahora pega tus Release Notes de forma segura (Markdown).${NC}"
+    
+    echo -e "${BLUE}📝 Pega tus Release Notes (Markdown):${NC}"
     capture_release_notes "$tmp_notes"
 
-    if [[ ! -s "$tmp_notes" ]]; then
-        echo -e "${RED}❌ No se recibieron Release Notes (archivo vacío). Cancelando.${NC}"
-        exit 1
-    fi
+    [[ ! -s "$tmp_notes" ]] && { log_error "Notas vacías. Cancelando."; exit 1; }
 
-    # Calcular versión RC
-    BASE_VER=$(get_current_version)
-    RC_NUM=$(next_rc_number "$BASE_VER")
-    RC_TAG="v${BASE_VER}-rc${RC_NUM}"
+    # Calcular versión
+    local base_ver=$(get_current_version)
+    local rc_num=$(next_rc_number "$base_ver")
+    local rc_tag="v${base_ver}-rc${rc_num}"
 
-    echo -e "La versión base actual es: ${BLUE}$BASE_VER${NC}"
-    echo -e "Tag sugerido: ${BLUE}$RC_TAG${NC}"
+    prepend_release_notes_header "$tmp_notes" "Release Notes - ${rc_tag} (Staging)"
 
-    # Solución: validar nombre de tag (evita espacios / caracteres inválidos)
-    while true; do
-        read -r -p "¿Nombre del tag RC? (Enter para '$RC_TAG'): " user_tag
-        RC_TAG="${user_tag:-$RC_TAG}"
+    log_info "Tag sugerido: $rc_tag"
+    if ! ask_yes_no "¿Desplegar a STAGING con tag $rc_tag?"; then exit 0; fi
 
-        if valid_tag "$RC_TAG"; then
-            break
-        fi
-
-        echo -e "${RED}❌ Tag inválido: '$RC_TAG'${NC}"
-        echo "Reglas rápidas: sin espacios, evita caracteres raros; usa algo como: v0.6.1-rc1"
-    done
-
-    # Solución: forzar encabezado consistente en las Release Notes (evita que la IA ponga otra versión)
-    prepend_release_notes_header "$tmp_notes" "Release Notes - ${RC_TAG} (Staging)"
-
-    echo -e "${YELLOW}🚀 Desplegando a STAGING con tag: $RC_TAG${NC}"
-    read -r -p "Confirmar? [si/N]: " confirm
-    [[ "$confirm" != "si" ]] && exit 0
-
-    # Antes de mover ramas, aseguramos limpio (incluye submodule sync)
+    # Ejecución
     ensure_clean_git
-
-    git checkout staging
-    git pull origin staging
-
-    # Solución: sincroniza submódulos tras cambiar rama, para evitar quedar "sucio" por punteros
-    sync_submodules_if_any
-
+    update_branch_from_remote "staging"
     git merge --ff-only dev
-
-    # Solución: guardar Release Notes en el tag (multilínea) sin explotar la terminal
-    git tag -a "$RC_TAG" -F "$tmp_notes"
-    git push origin staging
-    git push origin "$RC_TAG"
-
-    echo -e "${GREEN}✅ Staging actualizado y taggeado ($RC_TAG).${NC}"
     
-    # Nos quedamos en Staging por si el usuario quiere verificar o promover inmediatamente
-    echo -e "${BLUE}📍 Estás en la rama 'staging'.${NC}"
+    git tag -a "$rc_tag" -F "$tmp_notes"
+    git push origin staging
+    git push origin "$rc_tag"
+    
+    log_success "✅ Staging actualizado ($rc_tag)."
+    log_info "📍 Estás en 'staging'."
 }
 
 # 3. Staging -> PROD (Release Oficial)
 promote_to_prod() {
     ensure_clean_git
-    CURRENT_BRANCH=$(git branch --show-current)
-
-    # Lógica inteligente: Si no estoy en staging, me cambio automáticamente
-    if [[ "$CURRENT_BRANCH" != "staging" ]]; then
-        echo -e "${YELLOW}🔄 No estás en 'staging'. Cambiando automáticamente...${NC}"
-        git checkout staging
-        sync_submodules_if_any
-        git pull origin staging
+    local current=$(git branch --show-current)
+    
+    if [[ "$current" != "staging" ]]; then
+        log_warn "No estás en 'staging'. Cambiando..."
+        update_branch_from_remote "staging"
     fi
 
-    echo -e "${YELLOW}🚀 PROMOCIÓN A PRODUCCIÓN${NC}"
+    log_info "🚀 PROMOCIÓN A PRODUCCIÓN"
     git fetch origin main
-
+    
     generate_ai_prompt "staging" "origin/main"
 
-    # Solución: Capturar Release Notes de forma segura también para el release final
+    local tmp_notes
     tmp_notes="$(mktemp -t release-notes.XXXXXX.md)"
     trap 'rm -f "$tmp_notes"' EXIT
-
-    echo -e "${BLUE}📝 Ahora pega tus Release Notes de forma segura (Markdown) para Producción.${NC}"
     capture_release_notes "$tmp_notes"
 
-    if [[ ! -s "$tmp_notes" ]]; then
-        echo -e "${RED}❌ No se recibieron Release Notes (archivo vacío). Cancelando.${NC}"
-        exit 1
-    fi
+    [[ ! -s "$tmp_notes" ]] && { log_error "Notas vacías."; exit 1; }
 
-    BASE_VER=$(get_current_version)
-    RELEASE_TAG="v${BASE_VER}"
+    local base_ver=$(get_current_version)
+    local release_tag="v${base_ver}"
+    
+    prepend_release_notes_header "$tmp_notes" "Release Notes - ${release_tag} (Producción)"
 
-    echo -e "Versión detectada (Release Please): ${BLUE}$BASE_VER${NC}"
-    echo -e "Se creará el tag: ${BLUE}$RELEASE_TAG${NC} en main."
+    if ! ask_yes_no "¿Confirmar pase a Producción ($release_tag)?"; then exit 0; fi
 
-    # Solución: validar nombre de tag (aunque aquí viene “limpio”, esto protege cambios futuros)
-    if ! valid_tag "$RELEASE_TAG"; then
-        echo -e "${RED}❌ Tag inválido calculado: '$RELEASE_TAG'${NC}"
-        exit 1
-    fi
-
-    # Solución: forzar encabezado consistente en las Release Notes (evita que la IA ponga otra versión)
-    prepend_release_notes_header "$tmp_notes" "Release Notes - ${RELEASE_TAG} (Producción)"
-
-    read -r -p "¿Confirmar pase a Producción? [si/N]: " confirm
-    [[ "$confirm" != "si" ]] && exit 0
-
-    # Antes de mover ramas, aseguramos limpio (incluye submodule sync)
     ensure_clean_git
-
-    git checkout main
-    git pull origin main
-
-    # Solución: sincroniza submódulos tras cambiar rama, para evitar quedar "sucio" por punteros
-    sync_submodules_if_any
-
+    update_branch_from_remote "main"
     git merge --ff-only staging
 
-    # Tag SemVer Oficial
-    if git rev-parse "$RELEASE_TAG" >/dev/null 2>&1; then
-        echo -e "${YELLOW}⚠️ El tag $RELEASE_TAG ya existe. ¿Es un re-deploy o hotfix sin cambio de versión?${NC}"
+    if git rev-parse "$release_tag" >/dev/null 2>&1; then
+        log_warn "El tag $release_tag ya existe (posible re-deploy)."
     else
-        # Solución: guardar Release Notes reales en el tag (multilínea)
-        git tag -a "$RELEASE_TAG" -F "$tmp_notes"
-        git push origin "$RELEASE_TAG"
+        git tag -a "$release_tag" -F "$tmp_notes"
+        git push origin "$release_tag"
     fi
 
     git push origin main
-    echo -e "${GREEN}✅ Producción actualizada ($RELEASE_TAG).${NC}"
-    
-    # CAMBIO: Nos quedamos en main para verificar el despliegue final
-    echo -e "${BLUE}📍 Has quedado en la rama 'main'.${NC}"
+    log_success "✅ Producción actualizada ($release_tag)."
+    log_info "📍 Estás en 'main'."
 }
 
 # 4. Hotfix Flow
 create_hotfix() {
-    CURRENT_BRANCH=$(git branch --show-current)
-
-    echo -e "${RED}🔥 HOTFIX MODE${NC}"
+    log_warn "🔥 HOTFIX MODE"
     read -r -p "Nombre del hotfix (ej: login-bug): " hf_name
-    HF_BRANCH="hotfix/$hf_name"
+    local hf_branch="hotfix/$hf_name"
 
-    # Solución: valida limpio antes de cambiar ramas
     ensure_clean_git
-
-    git checkout main
-    git pull origin main
-
-    # Solución: sincroniza submódulos tras cambiar rama
-    sync_submodules_if_any
-
-    git checkout -b "$HF_BRANCH"
-
-    echo -e "${GREEN}✅ Estás en '$HF_BRANCH'. Haz tus cambios y commit.${NC}"
-    echo "Cuando termines, ejecuta: git promote hotfix-finish"
+    update_branch_from_remote "main"
+    
+    git checkout -b "$hf_branch"
+    log_success "✅ Estás en '$hf_branch'. Haz tus cambios y luego: git promote hotfix-finish"
 }
 
 finish_hotfix() {
-    CURRENT_BRANCH=$(git branch --show-current)
+    local current=$(git branch --show-current)
+    [[ "$current" != hotfix/* ]] && { log_error "No estás en una rama hotfix/.*"; exit 1; }
 
-    [[ "$CURRENT_BRANCH" != hotfix/* ]] && { echo -e "${RED}❌ No estás en una rama hotfix/.*${NC}"; exit 1; }
-
-    # Solución: valida limpio antes de finalizar hotfix
     ensure_clean_git
+    log_warn "🩹 Finalizando Hotfix..."
 
-    echo -e "${YELLOW}🩹 Finalizando Hotfix...${NC}"
-    # 1. Merge a Main
-    git checkout main
-    git pull origin main
-
-    # Solución: sincroniza submódulos tras cambiar rama
-    sync_submodules_if_any
-
-    git merge --no-ff "$CURRENT_BRANCH" -m "Merge hotfix: $CURRENT_BRANCH"
+    # Merge a Main
+    update_branch_from_remote "main"
+    git merge --no-ff "$current" -m "Merge hotfix: $current"
     git push origin main
 
-    # 2. Merge a Dev (Para no perder el fix)
-    git checkout dev
-    git pull origin dev
-
-    # Solución: sincroniza submódulos tras cambiar rama
-    sync_submodules_if_any
-
-    git merge --no-ff "$CURRENT_BRANCH" -m "Merge hotfix: $CURRENT_BRANCH"
+    # Merge a Dev
+    update_branch_from_remote "dev"
+    git merge --no-ff "$current" -m "Merge hotfix: $current"
     git push origin dev
 
-    # 3. Taggear (Opcional, pide versión manual porque release-please puede no haber corrido)
-    BASE_VER=$(get_current_version)
-    echo -e "Versión base era: $BASE_VER. Sugerencia: Incrementa el PATCH."
-    read -r -p "Nuevo Tag (ej: v0.6.2): " NEW_TAG
+    # Taggear
+    local base_ver=$(get_current_version)
+    echo "Versión base: $base_ver. Sugerencia: Incrementa PATCH."
+    read -r -p "Nuevo Tag (ej: v0.6.2): " new_tag
 
-    if [[ -n "$NEW_TAG" ]]; then
-        # Solución: validar nombre de tag antes de crear
-        if ! valid_tag "$NEW_TAG"; then
-            echo -e "${RED}❌ Tag inválido: '$NEW_TAG'${NC}"
-            echo "Reglas rápidas: sin espacios, evita caracteres raros; usa algo como: v0.6.2"
-            exit 1
-        fi
-
-        git checkout main
-        # Solución: sincroniza submódulos tras cambiar rama
-        sync_submodules_if_any
-
-        # Solución: capturar release notes seguras para hotfix también (opcional, pero previene “explosión”)
-        tmp_notes="$(mktemp -t release-notes.XXXXXX.md)"
-        trap 'rm -f "$tmp_notes"' EXIT
-        echo -e "${BLUE}📝 (Opcional) Pega Release Notes del Hotfix (Markdown). Guarda y cierra.${NC}"
-        capture_release_notes "$tmp_notes"
-
-        if [[ -s "$tmp_notes" ]]; then
-            git tag -a "$NEW_TAG" -F "$tmp_notes"
+    if [[ -n "$new_tag" ]]; then
+        if valid_tag "$new_tag"; then
+            update_branch_from_remote "main"
+            git tag -a "$new_tag" -m "Hotfix Release $new_tag"
+            git push origin "$new_tag"
         else
-            git tag -a "$NEW_TAG" -m "Hotfix Release $NEW_TAG"
+            log_error "Tag inválido."
         fi
-
-        git push origin "$NEW_TAG"
     fi
 
-    echo -e "${GREEN}✅ Hotfix integrado en Main y Dev.${NC}"
+    log_success "✅ Hotfix integrado en Main y Dev."
 }
 
-# --- MENU PRINCIPAL ---
+# ==============================================================================
+# 4. PARSEO DE COMANDOS
+# ==============================================================================
+
+TARGET_ENV="${1:-}"
 
 case "$TARGET_ENV" in
-    dev) promote_to_dev ;;
-    staging) promote_to_staging ;;
-    prod) promote_to_prod ;;
-    hotfix) create_hotfix ;;
+    dev)       promote_to_dev ;;
+    staging)   promote_to_staging ;;
+    prod)      promote_to_prod ;;
+    sync)      promote_sync_all ;;     # <--- TU NUEVA ARMA SECRETA
+    hotfix)    create_hotfix ;;
     hotfix-finish) finish_hotfix ;;
     *) 
-        echo "Uso: git promote [dev | staging | prod | hotfix | hotfix-finish]"
+        echo "Uso: git promote [dev | staging | prod | sync | hotfix]"
+        echo "   sync: Alinea feature -> dev -> staging -> main automáticamente."
         exit 1
         ;;
 esac
-# --- FIN DEL SCRIPT ---
