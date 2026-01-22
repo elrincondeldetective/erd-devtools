@@ -9,9 +9,9 @@ IFS=$'\n\t'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="${SCRIPT_DIR}/../lib"
 
-source "${LIB_DIR}/utils.sh"       # Logs, UI
-source "${LIB_DIR}/config.sh"      # Config Global (SIMPLE_MODE)
-source "${LIB_DIR}/git-core.sh"    # Git Ops
+source "${LIB_DIR}/core/utils.sh"       # Logs, UI
+source "${LIB_DIR}/core/config.sh"      # Config Global (SIMPLE_MODE)
+source "${LIB_DIR}/core/git-ops.sh"    # Git Ops
 source "${LIB_DIR}/release-flow.sh" # Versioning
 source "${LIB_DIR}/ssh-ident.sh"   # <--- AGREGADO: Gestión de Identidad
 

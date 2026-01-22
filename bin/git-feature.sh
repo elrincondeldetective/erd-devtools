@@ -10,9 +10,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="${SCRIPT_DIR}/../lib"
 
 # Importamos las herramientas necesarias
-source "${LIB_DIR}/utils.sh"       # Logs, UI (log_info, log_error...)
-source "${LIB_DIR}/config.sh"      # Variables globales (BASE_BRANCH, PREFIX...)
-source "${LIB_DIR}/git-core.sh"    # Operaciones Git (ensure_clean, sync_submodules...)
+source "${LIB_DIR}/core/utils.sh"       # Logs, UI (log_info, log_error...)
+source "${LIB_DIR}/core/config.sh"      # Variables globales (BASE_BRANCH, PREFIX...)
+source "${LIB_DIR}/core/git-ops.sh"    # Operaciones Git (ensure_clean, sync_submodules...)
 source "${LIB_DIR}/git-flow.sh"    # Naming conventions (sanitize_feature_suffix)
 
 # ==============================================================================

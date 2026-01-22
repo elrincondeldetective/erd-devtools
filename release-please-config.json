@@ -3,7 +3,7 @@
     ".": {
       "release-type": "simple",
       "package-name": "erd-devtools",
-      "version-file": "lib/version.sh" 
+      "version-file": "lib/core/version.sh" 
     }
   }
 }

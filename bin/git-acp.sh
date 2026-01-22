@@ -11,8 +11,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="${SCRIPT_DIR}/../lib"
 
 # Orden de carga importante
-source "${LIB_DIR}/utils.sh"       # Helpers UI, Logs, TTY
-source "${LIB_DIR}/config.sh"      # Configuración y Defaults
+source "${LIB_DIR}/core/utils.sh"       # Helpers UI, Logs, TTY
+source "${LIB_DIR}/core/config.sh"      # Configuración y Defaults
 source "${LIB_DIR}/git-flow.sh"    # Políticas de ramas
 source "${LIB_DIR}/ssh-ident.sh"   # Identidad SSH/GPG
 source "${LIB_DIR}/ci-workflow.sh" # Flujo Post-Push (CI/PR)
