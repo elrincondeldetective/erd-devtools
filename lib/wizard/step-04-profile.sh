@@ -31,14 +31,21 @@ EOF
     # DisplayName;GitName;GitEmail;SigningKey(Pub);Remote;Host;SSHKey(Priv);GHLogin
     local profile_entry="$GIT_NAME;$GIT_NAME;$GIT_EMAIL;$SIGNING_KEY;origin;github.com;$SSH_KEY_FINAL;$gh_login"
 
-    # Verificamos si este email ya existe para evitar duplicados infinitos
-    if grep -q "$GIT_EMAIL" "$rc_file"; then
+    # --- FIX: DEDUPLICACIÓN ROBUSTA Y ESCRITURA ATÓMICA ---
+    # Verificamos si este email ya existe usando -F (Fixed string) para seguridad
+    if grep -Fq "$GIT_EMAIL" "$rc_file"; then
         ui_success "Tu perfil ya existía en el menú de identidades."
     else
-        # Usamos append seguro
-        echo "" >> "$rc_file"
-        echo "# Auto-agregado por setup-wizard ($(date +%F))" >> "$rc_file"
-        echo "PROFILES+=(\"$profile_entry\")" >> "$rc_file"
+        # Escritura a archivo temporal para evitar corrupciones si se corta el proceso
+        local tmp_rc="${rc_file}.tmp"
+        cp "$rc_file" "$tmp_rc"
+        
+        echo "" >> "$tmp_rc"
+        echo "# Auto-agregado por setup-wizard ($(date +%F))" >> "$tmp_rc"
+        echo "PROFILES+=(\"$profile_entry\")" >> "$tmp_rc"
+        
+        # Reemplazo atómico
+        mv "$tmp_rc" "$rc_file"
         ui_success "Perfil agregado exitosamente al menú."
     fi
 

@@ -90,17 +90,10 @@ run_step_git_config() {
     # ==========================================================================
     # 4. CONFIGURACIÓN DE FIRMA (SSH SIGNING)
     # ==========================================================================
-    # Verificamos si ya está configurado gpg.format=ssh
-    local current_format
-    current_format=$(git_get global gpg.format)
-    local current_key
-    current_key=$(git_get global user.signingkey)
-
-    if [[ "$current_format" == "ssh" && -n "$current_key" ]]; then
-        ui_success "Firma SSH ya configurada (Key: $current_key). No se hacen cambios."
-        # Actualizamos la variable exportada para el perfil por si acaso
-        SIGNING_KEY="$current_key"
-    else
+    # FIX: Siempre aplicamos la configuración si venimos del paso 2.
+    # Eliminamos el chequeo previo que evitaba actualizar si ya existía una llave vieja.
+    
+    if [ -n "$SSH_KEY_FINAL" ]; then
         ui_info "Activando firma de commits con SSH..."
         
         git config --global --replace-all gpg.format ssh
@@ -108,6 +101,16 @@ run_step_git_config() {
         git config --global --replace-all commit.gpgsign true
         git config --global --replace-all tag.gpgsign true
         
-        ui_success "Firma configurada en GLOBAL (SSH signing activo)."
+        ui_success "Firma configurada en GLOBAL (Key: $SIGNING_KEY)."
+    else
+        # Fallback por si este script se corre aislado (sin paso 2)
+        local current_key
+        current_key=$(git_get global user.signingkey)
+        if [ -n "$current_key" ]; then
+            ui_success "Firma SSH ya configurada previamente (Key: $current_key)."
+            SIGNING_KEY="$current_key"
+        else
+            ui_warn "No se seleccionó llave nueva y no hay configuración previa. Saltando firma."
+        fi
     fi
 }

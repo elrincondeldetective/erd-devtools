@@ -76,29 +76,59 @@ sync_ssh_key_to_github() {
     local key_title="Devbox-Key-$(date +%Y%m%d-%H%M)"
     local pub_key_content
     pub_key_content=$(cat "$SSH_KEY_FINAL.pub")
-    local upload_success=false
+    local auth_uploaded=false
+    # Variable para trackear si la firma se subió (aunque no bloquea el flujo principal)
+    local sign_uploaded=false
 
-    ui_spinner "Intentando subir llave automáticamente..." sleep 2
+    ui_spinner "Intentando subir llaves automáticamente..." sleep 2
 
-    # Intento 1: Subida automática vía API
-    if gh ssh-key add "$SSH_KEY_FINAL.pub" --title "$key_title" --type authentication >/dev/null 2>&1; then
-        upload_success=true
-        ui_success "¡Éxito! La llave se subió automáticamente."
+    # --------------------------------------------------------------------------
+    # FASE 1: Subida como Llave de AUTENTICACIÓN (Lectura/Escritura de repo)
+    # --------------------------------------------------------------------------
+    if gh ssh-key add "$SSH_KEY_FINAL.pub" --title "$key_title (Auth)" --type authentication >/dev/null 2>&1; then
+        auth_uploaded=true
+        ui_success "✅ Llave de Autenticación subida (git push/pull habilitado)."
     else
         # Verificación: ¿Ya existía?
-        # Extraemos el hash de la llave para comparar
         local key_body
         key_body=$(echo "$pub_key_content" | cut -d' ' -f2)
         
         if gh ssh-key list | grep -q "$key_body"; then
-            upload_success=true
-            ui_success "La llave ya estaba configurada en tu cuenta."
+            auth_uploaded=true
+            ui_success "ℹ️ La llave ya estaba configurada para Autenticación."
+        else
+            ui_warn "⚠️ Falló la subida de la llave de Autenticación."
         fi
     fi
 
-    # Fallback: Subida manual
-    if [ "$upload_success" = false ]; then
-        ui_alert_box "⚠️ NO PUDIMOS SUBIR LA LLAVE AUTOMÁTICAMENTE" \
+    # --------------------------------------------------------------------------
+    # FASE 2: Subida como Llave de FIRMA (Verified Commits) - FIX
+    # --------------------------------------------------------------------------
+    # Intentamos registrar la misma llave explícitamente para signing.
+    if gh ssh-key add "$SSH_KEY_FINAL.pub" --title "$key_title (Signing)" --type signing >/dev/null 2>&1; then
+        sign_uploaded=true
+        ui_success "✅ Llave de Firma subida (Tus commits saldrán como 'Verified')."
+    else
+        # Verificación silenciosa para signing
+        local key_body
+        key_body=$(echo "$pub_key_content" | cut -d' ' -f2)
+        
+        # Nota: gh ssh-key list por defecto muestra auth keys, usamos --type signing si la versión lo soporta
+        # o simplemente ignoramos el error si no es crítico.
+        if gh ssh-key list --type signing 2>/dev/null | grep -q "$key_body"; then
+                ui_success "ℹ️ La llave ya estaba configurada para Firma."
+                sign_uploaded=true
+        else
+                ui_warn "⚠️ No se pudo registrar como llave de Firma (Signing Key)."
+                ui_info "Podrás hacer commits, pero quizás no aparezcan como 'Verified'."
+        fi
+    fi
+
+    # --------------------------------------------------------------------------
+    # FASE 3: Fallback Manual (Solo si falló Auth, que es lo crítico)
+    # --------------------------------------------------------------------------
+    if [ "$auth_uploaded" = false ]; then
+        ui_alert_box "⚠️ NO PUDIMOS SUBIR LA LLAVE DE AUTENTICACIÓN" \
             "Esto es normal si faltan permisos de admin (write:public_key)." \
             "Vamos a hacerlo manualmente."
 

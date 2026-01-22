@@ -59,12 +59,28 @@ verify_2fa_enforcement() {
 
     while true; do
         local is_2fa_enabled
-        is_2fa_enabled=$(gh api user -q ".two_factor_authentication")
+        # FIX: Capturamos error para no romper script con set -e y manejamos nulos
+        is_2fa_enabled=$(gh api user -q ".two_factor_authentication" 2>/dev/null || echo "null")
 
         if [ "$is_2fa_enabled" == "true" ]; then
             ui_success "Autenticación de Dos Factores (2FA) detectada."
             break
+        elif [ "$is_2fa_enabled" == "null" ] || [ -z "$is_2fa_enabled" ]; then
+            # --- FIX: MANEJO DE CAMPO VACÍO/NULL ---
+            ui_warn "⚠️ No pudimos verificar automáticamente el estado de 2FA."
+            ui_info "Esto a veces pasa con ciertos tokens o redes corporativas."
+            echo ""
+            ui_info "Por favor, verifica manualmente en: https://github.com/settings/security"
+            
+            if gum confirm "¿Confirmas que tienes 2FA activado y quieres continuar?"; then
+                ui_success "Continuando bajo responsabilidad del usuario."
+                break
+            else
+                ui_error "Verificación cancelada."
+                exit 1
+            fi
         else
+            # Caso: False explícito (Bloqueante)
             ui_alert_box "⛔ ACCESO DENEGADO ⛔" \
                 "Tu cuenta NO tiene activado el 2FA." \
                 "Es obligatorio para trabajar en este ecosistema."
