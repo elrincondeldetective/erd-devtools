@@ -1,84 +1,49 @@
 #!/usr/bin/env bash
-# /webapps/erd-ecosystem/.devtools/git-feature.sh
+# /webapps/erd-ecosystem/.devtools/bin/git-feature.sh
 set -euo pipefail
 IFS=$'\n\t'
 
+# ==============================================================================
+# 1. BOOTSTRAP DE LIBRERÍAS
+# ==============================================================================
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="${SCRIPT_DIR}/../lib"
+
+# Importamos las herramientas necesarias
+source "${LIB_DIR}/utils.sh"       # Logs, UI (log_info, log_error...)
+source "${LIB_DIR}/config.sh"      # Variables globales (BASE_BRANCH, PREFIX...)
+source "${LIB_DIR}/git-core.sh"    # Operaciones Git (ensure_clean, sync_submodules...)
+source "${LIB_DIR}/git-flow.sh"    # Naming conventions (sanitize_feature_suffix)
+
+# ==============================================================================
+# 2. CONFIGURACIÓN Y DEFAULTS
+# ==============================================================================
 REMOTE="${REMOTE:-origin}"
 BASE_BRANCH="${BASE_BRANCH:-dev}"
 PREFIX="${PREFIX:-feature/}"
-MODE="rebase"       # rebase | merge...
+MODE="rebase"       # rebase | merge
 NO_PULL=false
 
 usage() {
-  cat <<'EOF'
+  cat <<EOF
 Uso:
   git feature <nombre> [--base <rama>] [--rebase|--merge] [--no-pull]
 
 Ejemplos:
-  git feature otra-rama
-  git feature feature/otra-rama
+  git feature login-fix
+  git feature feature/login-fix
   git feature bugfix-login --base dev --rebase
-  git feature hotfix-ui --base dev --merge
-  git feature otra-rama --no-pull
 
 Qué hace:
-  - Asegura que el branch base (por defecto: dev) esté actualizado (fetch + pull)
-  - Si la rama no existe: la crea desde base
-  - Si ya existe: la hace checkout y la actualiza con base (rebase por defecto)
-  - Sin alias global: se configura como alias local via devbox init_hook
+  - Asegura que el repo esté limpio.
+  - Actualiza la rama base (dev).
+  - Crea la rama feature/xxx o la actualiza si ya existe.
 EOF
 }
 
-die() { echo "❌ $*" >&2; exit 1; }
-
-ensure_repo() {
-  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "No estás dentro de un repo Git."
-}
-
-ensure_clean() {
-  if [[ -n "$(git status --porcelain)" ]]; then
-    die "Tienes cambios sin guardar. Haz commit o stash primero."
-  fi
-}
-
-sync_submodules_if_any() {
-  if [[ -f ".gitmodules" ]]; then
-    git submodule update --init --recursive >/dev/null 2>&1 || true
-  fi
-}
-
-branch_exists_local() {
-  git show-ref --verify --quiet "refs/heads/$1"
-}
-
-update_base_branch() {
-  local base="$1"
-  echo "🔄 Actualizando base '$base'..."
-  git fetch "$REMOTE" "$base" >/dev/null 2>&1 || true
-  git checkout "$base" >/dev/null 2>&1 || die "No pude hacer checkout a '$base'. ¿Existe?"
-  sync_submodules_if_any
-
-  if ! $NO_PULL; then
-    git pull "$REMOTE" "$base" || die "Falló pull de '$REMOTE/$base'."
-  fi
-}
-
-normalize_branch_name() {
-  local name="$1"
-  # Si ya empieza con feature/, OK
-  if [[ "$name" == feature/* ]]; then
-    echo "$name"
-    return
-  fi
-
-  # Cualquier otra cosa: convertir a un sufijo seguro y prefijar feature/
-  local safe="${name//\//-}"
-  safe="${safe// /-}"
-  safe="$(echo "$safe" | sed -E 's/[^a-zA-Z0-9._-]+/-/g; s/-+/-/g')"
-  echo "${PREFIX}${safe}"
-}
-
-# ---- parse args ----
+# ==============================================================================
+# 3. PARSEO DE ARGUMENTOS
+# ==============================================================================
 ensure_repo
 
 if [[ $# -lt 1 ]]; then usage; exit 1; fi
@@ -88,48 +53,63 @@ shift || true
 
 while (( $# )); do
   case "$1" in
-    --base) BASE_BRANCH="${2:-}"; [[ -z "$BASE_BRANCH" ]] && die "Falta valor para --base"; shift 2 ;;
+    --base) BASE_BRANCH="${2:-}"; [[ -z "$BASE_BRANCH" ]] && { log_error "Falta valor para --base"; exit 1; }; shift 2 ;;
     --rebase) MODE="rebase"; shift ;;
     --merge) MODE="merge"; shift ;;
     --no-pull) NO_PULL=true; shift ;;
     -h|--help) usage; exit 0 ;;
-    *) die "Opción desconocida: $1" ;;
+    *) log_error "Opción desconocida: $1"; exit 1 ;;
   esac
 done
 
-TARGET_BRANCH="$(normalize_branch_name "$NAME")"
+# ==============================================================================
+# 4. LÓGICA PRINCIPAL
+# ==============================================================================
 
-ensure_clean
+# 1. Normalización del nombre
+if [[ "$NAME" == feature/* ]]; then
+    TARGET_BRANCH="$NAME"
+else
+    # Usamos la función de limpieza de git-flow.sh
+    SAFE_NAME="$(sanitize_feature_suffix "$NAME")"
+    TARGET_BRANCH="${PREFIX}${SAFE_NAME}"
+fi
 
-# 1) actualiza base (dev por defecto)
-update_base_branch "$BASE_BRANCH"
+# 2. Validar que no haya cambios pendientes
+ensure_clean_git
 
-# 2) crea o actualiza rama
+# 3. Actualizar rama base (dev) usando git-core.sh
+# update_branch_from_remote <branch> <remote> <no_pull_bool>
+update_branch_from_remote "$BASE_BRANCH" "$REMOTE" "$NO_PULL"
+
+# 4. Crear o Actualizar Feature Branch
 if branch_exists_local "$TARGET_BRANCH"; then
-  echo "🧭 Rama existe: $TARGET_BRANCH"
-  git checkout "$TARGET_BRANCH" >/dev/null 2>&1 || die "No pude hacer checkout a '$TARGET_BRANCH'."
-  sync_submodules_if_any
+  log_info "🧭 Rama ya existe: $TARGET_BRANCH"
+  git checkout "$TARGET_BRANCH" >/dev/null 2>&1
+  sync_submodules
 
-  echo "🔁 Actualizando '$TARGET_BRANCH' desde '$BASE_BRANCH' ($MODE)..."
+  log_info "🔁 Actualizando '$TARGET_BRANCH' desde '$BASE_BRANCH' (Modo: $MODE)..."
+  
   if [[ "$MODE" == "rebase" ]]; then
     if ! git rebase "$BASE_BRANCH"; then
-      echo "⚠️ Rebase con conflictos."
+      log_warn "⚠️  Rebase con conflictos."
       echo "   Resuelve y luego: git rebase --continue"
-      echo "   O aborta:          git rebase --abort"
+      echo "   O aborta:         git rebase --abort"
       exit 1
     fi
   else
     if ! git merge "$BASE_BRANCH"; then
-      echo "⚠️ Merge con conflictos."
+      log_warn "⚠️  Merge con conflictos."
       echo "   Resuelve, luego commit y continúa."
       exit 1
     fi
   fi
 else
-  echo "🌱 Creando rama: $TARGET_BRANCH desde $BASE_BRANCH"
+  log_success "🌱 Creando rama nueva: $TARGET_BRANCH (desde $BASE_BRANCH)"
   git checkout -b "$TARGET_BRANCH" "$BASE_BRANCH"
-  sync_submodules_if_any
+  sync_submodules
 fi
 
-echo "✅ Listo. Estás en: $(git branch --show-current)"
-echo "   Base: $BASE_BRANCH | Modo: $MODE | Remote: $REMOTE"
+echo
+log_success "✅ Listo. Estás en: $(git branch --show-current)"
+log_info "Base: $BASE_BRANCH | Remote: $REMOTE"
