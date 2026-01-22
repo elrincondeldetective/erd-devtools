@@ -1,26 +1,179 @@
 #!/usr/bin/env bash
 # /webapps/erd-ecosystem/.devtools/lib/utils.sh
 
-# Colores
+# ==============================================================================
+# 1. CONSTANTES Y COLORES
+# ==============================================================================
 export GREEN='\033[0;32m'
 export RED='\033[0;31m'
 export BLUE='\033[0;34m'
 export YELLOW='\033[1;33m'
-export NC='\033[0m'
+export NC='\033[0m' # No Color
 
-# Helpers de Log
-log_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
+# ==============================================================================
+# 2. LOGGING HELPERS
+# ==============================================================================
+log_info()    { echo -e "${BLUE}ℹ️  $1${NC}"; }
 log_success() { echo -e "${GREEN}✅ $1${NC}"; }
-log_error() { echo -e "${RED}❌ $1${NC}"; >&2; }
-log_warn() { echo -e "${YELLOW}⚠️  $1${NC}"; }
+log_error()   { echo -e "${RED}❌ $1${NC}"; >&2; }
+log_warn()    { echo -e "${YELLOW}⚠️  $1${NC}"; }
 
-# Helpers de UI (Gum wrapper)
+# ==============================================================================
+# 3. SYSTEM & TERMINAL CHECKS
+# ==============================================================================
+is_tty() { 
+    [[ -t 0 && -t 1 ]]
+}
+
+have_cmd() { 
+    command -v "$1" >/dev/null 2>&1
+}
+
+# ==============================================================================
+# 4. INTERACCIÓN CON EL USUARIO (UI)
+# ==============================================================================
+
+# Pregunta Sí/No robusta (soporta gum y fallback a read)
+# Uso: ask_yes_no "¿Quieres continuar?"
+ask_yes_no() {
+    local q="$1"
+    if is_tty && have_cmd gum; then 
+        gum confirm "$q"
+        return $?
+    fi
+    
+    if is_tty; then 
+        local ans
+        read -r -p "$q [S/n]: " ans
+        ans="${ans:-S}"
+        [[ "$ans" =~ ^[Ss]$ ]]
+        return $?
+    fi
+    
+    # Si no es TTY (script automático), asumimos NO por seguridad, 
+    # a menos que se implemente un flag --yes global.
+    return 1
+}
+
+# Wrapper para mantener compatibilidad con scripts anteriores
 confirm_action() {
-    local msg="$1"
-    if command -v gum >/dev/null 2>&1; then
-        gum confirm "$msg" || return 1
+    ask_yes_no "$1"
+}
+
+# ==============================================================================
+# 5. EJECUCIÓN DE COMANDOS
+# ==============================================================================
+
+# Ejecuta un comando mostrando qué se está haciendo y controlando errores
+# Uso: run_cmd "ls -la"
+run_cmd() {
+    local cmd="$1"
+    [[ -n "$cmd" ]] || return 2
+    echo; echo "▶️ Ejecutando: $cmd"
+    
+    # Desactivamos set -e temporalmente para capturar el error nosotros mismos
+    set +e
+    eval "$cmd"
+    local rc=$?
+    set -e
+    
+    return $rc
+}
+
+# ==============================================================================
+# 6. SUPERREPO GUARD (Protección contra ejecución en raíz de monorepo)
+# ==============================================================================
+
+# Verifica si existe el archivo .no-acp-here y bloquea la ejecución
+# Uso: check_superrepo_guard "$0" "$@"
+check_superrepo_guard() {
+    # Si la variable de entorno está en 1, saltamos el chequeo (bypass)
+    [[ "${DISABLE_NO_ACP_GUARD:-0}" == "1" ]] && return 0
+
+    local script_path="$1"
+    shift
+    local original_args=("$@")
+    
+    local top
+    top="$(git rev-parse --show-toplevel 2>/dev/null || echo "")"
+    
+    if [[ -n "$top" && -f "$top/.no-acp-here" ]]; then
+        echo
+        echo "🛑 SUPERREPO (NO ACP)"
+        echo "🔴 Aquí NO se usa este comando (marcado con .no-acp-here)."
+        echo
+        echo "✅ Usa en su lugar:"
+        echo "   • make rel"
+        echo "   • make rel-auto"
+        echo "   • git rel"
+        echo
+        
+        if is_tty; then
+            echo
+            echo "¿Qué quieres hacer ahora?"
+            export COLUMNS=1
+            PS3="Elige opción: "
+            select opt in "make rel" "make rel-auto" "git rel" "Continuar (forzar)" "Salir"; do
+                case "$REPLY" in
+                    1) exec make rel ;;
+                    2) exec make rel-auto ;;
+                    3) exec git rel ;;
+                    4) 
+                        # Relanzamos el script actual con una flag de entorno para saltar el guard
+                        exec env DISABLE_NO_ACP_GUARD=1 "$script_path" "${original_args[@]}" 
+                        ;;
+                    5) echo "✋ Cancelado."; exit 2 ;;
+                    *) echo "Opción inválida."; continue ;;
+                esac
+            done
+        else
+            exit 2
+        fi
+    fi
+}
+
+# ==============================================================================
+# 7. VISUALIZACIÓN (Progress Bar)
+# ==============================================================================
+
+# Muestra la barra de progreso de commits diarios
+# Uso: show_daily_progress <commits_hechos> <meta_diaria> [dry_run_bool]
+show_daily_progress() {
+    local current="${1:-0}"
+    local goal="${2:-10}"
+    local is_dry_run="${3:-false}"
+    local remain
+    local percent
+    local bar_length=30
+    local filled
+    local empty
+    local bar=""
+    
+    # Cálculos
+    remain=$(( goal - current ))
+    (( remain < 0 )) && remain=0
+    
+    if (( goal > 0 )); then
+        percent=$(( current * 100 / goal ))
     else
-        read -r -p "$msg [y/N]: " response
-        [[ "$response" =~ ^[yY]$ ]] || return 1
+        percent=100
+    fi
+    (( percent > 100 )) && percent=100
+
+    filled=$(( percent * bar_length / 100 ))
+    empty=$(( bar_length - filled ))
+
+    for ((i=0; i<filled; i++)); do bar+="#"; done
+    for ((i=0; i<empty;  i++)); do bar+="-"; done
+
+    echo
+    echo -e "${GREEN}┌─────────────────────────────────────────────"
+    echo -e "│ 📊 Commits hoy: ${current}/${goal} (${percent}%)"
+    echo -e "│ Progress : |${bar}|"
+    echo -e "│ Faltan   : ${remain} commit(s) para la meta diaria"
+    echo -e "└─────────────────────────────────────────────${NC}"
+    
+    if [[ "$is_dry_run" == "true" ]]; then 
+        echo -e "${GREEN}⚗️  Simulación (--dry-run).${NC}"
     fi
 }
