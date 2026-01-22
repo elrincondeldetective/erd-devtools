@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# /webapps/erd-ecosystem/.devtools/lib/config.sh
+# /webapps/erd-ecosystem/.devtools/lib/core/config.sh
 
 # ==============================================================================
 # 1. DETECCIÓN DEL ENTORNO
@@ -63,6 +63,13 @@ export SIMPLE_MODE=false
 if [ ${#PROFILES[@]} -eq 0 ]; then
   SIMPLE_MODE=true
   
+  # --- FIX: BYPASS PARA EL SETUP WIZARD ---
+  # Si estamos corriendo el wizard (setup-wizard.sh), no bloqueamos la ejecución 
+  # si falta user.name, porque el wizard es quien se encargará de configurarlo.
+  if [ "${DEVTOOLS_WIZARD_MODE:-false}" == "true" ]; then
+      return 0
+  fi
+
   # Validación de seguridad mínima para modo simple
   if [ -z "$(git config user.name)" ]; then
     echo "❌ Error de Configuración: Git user.name no está configurado globalmente."

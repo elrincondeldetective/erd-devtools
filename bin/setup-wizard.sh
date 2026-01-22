@@ -2,6 +2,10 @@
 # /webapps/erd-ecosystem/.devtools/bin/setup-wizard.sh
 set -e
 
+# --- FIX: ACTIVA MODO WIZARD ---
+# Esto avisa a lib/core/config.sh que no debe abortar si falta configuración.
+export DEVTOOLS_WIZARD_MODE=true
+
 # ==============================================================================
 # 1. BOOTSTRAP DE LIBRERÍAS
 # ==============================================================================
@@ -29,6 +33,17 @@ source "${WIZARD_DIR}/step-04-profile.sh"
 ensure_repo
 # Nos aseguramos de ejecutar desde la raíz para que las rutas relativas funcionen
 cd "$(git rev-parse --show-toplevel)"
+
+# --- FIX: CHECK DE DEPENDENCIAS CRÍTICAS ---
+# Fallar rápido si faltan herramientas esenciales antes de intentar usarlas
+REQUIRED_TOOLS="git gh gum ssh ssh-keygen"
+for tool in $REQUIRED_TOOLS; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "❌ Error Crítico: Falta la herramienta '$tool'."
+        echo "   Por favor instálala (o entra en el devbox) antes de continuar."
+        exit 1
+    fi
+done
 
 MARKER_FILE=".devtools/.setup_completed"
 FORCE=false
@@ -59,13 +74,17 @@ if [ "$VERIFY_ONLY" = true ]; then
     if [ -z "$CURRENT_NAME" ]; then CURRENT_NAME="$(git_get local user.name)"; fi
     
     # Check rápido de SSH
-    ui_spinner "Verificando conexión SSH..." ssh -T git@github.com -o StrictHostKeyChecking=accept-new 2>&1 | grep -q "successfully authenticated"
+    # --- FIX: NO USAR SET -E CON PIPES QUE PUEDEN FALLAR ---
+    # Usamos ui_spinner solo visualmente, y luego ejecutamos el comando dentro del if
+    ui_spinner "Verificando conexión SSH..." sleep 1
     
-    if [ $? -eq 0 ]; then
+    if ssh -T git@github.com -o StrictHostKeyChecking=accept-new 2>&1 | grep -q "successfully authenticated"; then
         ui_success "Conexión a GitHub: OK"
     else
         ui_error "Conexión a GitHub: FALLÓ"
-        ui_info "Ejecuta './bin/setup-wizard.sh --force' para reparar."
+        ui_info "Esto puede ocurrir si expiró tu sesión o cambió tu llave."
+        echo ""
+        ui_warn "🔧 SOLUCIÓN: Ejecuta './bin/setup-wizard.sh --force' para reparar."
         exit 1
     fi
 
