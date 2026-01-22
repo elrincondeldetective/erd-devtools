@@ -51,10 +51,22 @@ have_gum_ui() {
 # Ejecuta un comando permitiendo que falle sin abortar el script (incluso con set -e)
 # Uso: if try_cmd grep -q "foo" file; then ...
 try_cmd() {
+    # FIX: Preservar el estado original de `set -e` para no activarlo accidentalmente.
+    # Esto evita "side effects" en scripts que NO usan errexit.
+    local errexit_was_on=0
+    case "$-" in
+        *e*) errexit_was_on=1 ;;
+    esac
+
     set +e
     "$@"
     local rc=$?
-    set -e
+    set +e
+
+    if [[ "$errexit_was_on" -eq 1 ]]; then
+        set -e
+    fi
+
     return $rc
 }
 

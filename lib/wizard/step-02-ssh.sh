@@ -46,8 +46,17 @@ run_step_ssh() {
     if [ -f "$SSH_KEY_FINAL" ]; then
         # Borramos identidades viejas o rotas si es necesario, o solo agregamos
         chmod 600 "$SSH_KEY_FINAL"
-        ssh-add "$SSH_KEY_FINAL" >/dev/null 2>&1
-        ui_success "Llave cargada en memoria (ssh-agent)."
+
+        # FIX: No fallar silenciosamente: si ssh-add falla, avisar por qué y cómo arreglarlo.
+        # Esto ayuda cuando la llave tiene passphrase o el agente está mal configurado.
+        if ssh-add "$SSH_KEY_FINAL" >/dev/null 2>&1; then
+            ui_success "Llave cargada en memoria (ssh-agent)."
+        else
+            ui_warn "⚠️ No se pudo cargar la llave en el ssh-agent (ssh-add falló)."
+            ui_info "Esto suele pasar si la llave tiene passphrase o el agente no está listo."
+            ui_info "Solución: ejecuta manualmente: ssh-add \"$SSH_KEY_FINAL\""
+            ui_info "Luego reintenta: ./bin/setup-wizard.sh --force"
+        fi
     else
         ui_warn "No se encontró la llave privada local ($SSH_KEY_FINAL). El agente no la cargó."
     fi
