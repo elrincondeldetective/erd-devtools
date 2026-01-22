@@ -31,9 +31,10 @@ EOF
     # DisplayName;GitName;GitEmail;SigningKey(Pub);Remote;Host;SSHKey(Priv);GHLogin
     local profile_entry="$GIT_NAME;$GIT_NAME;$GIT_EMAIL;$SIGNING_KEY;origin;github.com;$SSH_KEY_FINAL;$gh_login"
 
-    # --- FIX: DEDUPLICACIÓN ROBUSTA Y ESCRITURA ATÓMICA ---
-    # Verificamos si este email ya existe usando -F (Fixed string) para seguridad
-    if grep -Fq "$GIT_EMAIL" "$rc_file"; then
+    # --- FIX: DEDUPLICACIÓN ROBUSTA Y ESCRITURA ATÓMICA (P1) ---
+    # Usamos grep con -F (Fixed string) y buscamos el email CON los delimitadores (;)
+    # Esto evita falsos positivos (ej: "ana@x.com" dentro de "mariana@x.com")
+    if grep -Fq ";$GIT_EMAIL;" "$rc_file"; then
         ui_success "Tu perfil ya existía en el menú de identidades."
     else
         # Escritura a archivo temporal para evitar corrupciones si se corta el proceso
@@ -90,5 +91,7 @@ EOF
     # ==========================================================================
     # 6. MARCAR COMO COMPLETADO
     # ==========================================================================
+    # Aseguramos que el directorio exista (por si se corre aislado)
+    mkdir -p "$(dirname "$marker_file")"
     touch "$marker_file"
 }
