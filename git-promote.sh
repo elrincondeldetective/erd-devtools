@@ -155,6 +155,12 @@ prepend_release_notes_header() {
 promote_to_dev() {
     CURRENT_BRANCH=$(git branch --show-current)
 
+    # Si por error el usuario corre esto desde dev, staging o main, avisar
+    if [[ "$CURRENT_BRANCH" == "dev" || "$CURRENT_BRANCH" == "staging" || "$CURRENT_BRANCH" == "main" ]]; then
+        echo -e "${RED}❌ Estás en '$CURRENT_BRANCH'. Debes estar en una feature branch para promover a Dev.${NC}"
+        exit 1
+    fi
+
     echo -e "${YELLOW}🚧 PROMOCIÓN A DEV (Destructiva)${NC}"
     read -r -p "¿Estás seguro de aplastar 'dev' con '$CURRENT_BRANCH'? [si/N]: " confirm
     [[ "$confirm" != "si" ]] && exit 0
@@ -184,12 +190,16 @@ promote_to_dev() {
 
 # 2. Dev -> STAGING (Release Candidate)
 promote_to_staging() {
+    ensure_clean_git
     CURRENT_BRANCH=$(git branch --show-current)
 
-    [[ "$CURRENT_BRANCH" != "dev" ]] && { echo -e "${RED}❌ Ve a 'dev' primero.${NC}"; exit 1; }
-
-    # Solución: valida limpio desde el inicio (incluye sync de submódulos)
-    ensure_clean_git
+    # Lógica inteligente: Si no estoy en dev, me cambio automáticamente
+    if [[ "$CURRENT_BRANCH" != "dev" ]]; then
+        echo -e "${YELLOW}🔄 No estás en 'dev'. Cambiando automáticamente...${NC}"
+        git checkout dev
+        sync_submodules_if_any
+        git pull origin dev
+    fi
 
     echo -e "${YELLOW}🔍 Comparando Dev -> Staging${NC}"
     git fetch origin staging
@@ -219,6 +229,7 @@ promote_to_staging() {
     RC_TAG="v${BASE_VER}-rc${RC_NUM}"
 
     echo -e "La versión base actual es: ${BLUE}$BASE_VER${NC}"
+    echo -e "Tag sugerido: ${BLUE}$RC_TAG${NC}"
 
     # Solución: validar nombre de tag (evita espacios / caracteres inválidos)
     while true; do
@@ -257,20 +268,23 @@ promote_to_staging() {
     git push origin "$RC_TAG"
 
     echo -e "${GREEN}✅ Staging actualizado y taggeado ($RC_TAG).${NC}"
-    git checkout dev
-
-    # Solución: sincroniza submódulos tras volver a dev
-    sync_submodules_if_any
+    
+    # Nos quedamos en Staging por si el usuario quiere verificar o promover inmediatamente
+    echo -e "${BLUE}📍 Estás en la rama 'staging'.${NC}"
 }
 
 # 3. Staging -> PROD (Release Oficial)
 promote_to_prod() {
+    ensure_clean_git
     CURRENT_BRANCH=$(git branch --show-current)
 
-    [[ "$CURRENT_BRANCH" != "staging" ]] && { echo -e "${RED}❌ Ve a 'staging' primero.${NC}"; exit 1; }
-
-    # Solución: valida limpio desde el inicio (incluye sync de submódulos)
-    ensure_clean_git
+    # Lógica inteligente: Si no estoy en staging, me cambio automáticamente
+    if [[ "$CURRENT_BRANCH" != "staging" ]]; then
+        echo -e "${YELLOW}🔄 No estás en 'staging'. Cambiando automáticamente...${NC}"
+        git checkout staging
+        sync_submodules_if_any
+        git pull origin staging
+    fi
 
     echo -e "${YELLOW}🚀 PROMOCIÓN A PRODUCCIÓN${NC}"
     git fetch origin main
@@ -329,10 +343,9 @@ promote_to_prod() {
 
     git push origin main
     echo -e "${GREEN}✅ Producción actualizada ($RELEASE_TAG).${NC}"
-    git checkout staging
-
-    # Solución: sincroniza submódulos tras volver a staging
-    sync_submodules_if_any
+    
+    # CAMBIO: Nos quedamos en main para verificar el despliegue final
+    echo -e "${BLUE}📍 Has quedado en la rama 'main'.${NC}"
 }
 
 # 4. Hotfix Flow
