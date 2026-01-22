@@ -19,20 +19,32 @@ get_detected_issue() {
 get_full_context_diff() {
     local context=""
     
-    # 1. Cambios rastreados (Tracked)
-    # Usamos --word-diff para que sea más compacto y fácil de leer para la IA
-    context+=$(git diff --word-diff)
+    # --- A. Cambios en STAGING (Listos para commit - git add ya hecho) ---
+    # Es vital revisar esto primero, porque si el usuario ya hizo 'git add',
+    # git diff normal saldrá vacío.
+    local staged_diff
+    staged_diff=$(git diff --staged --word-diff)
     
-    # 2. Archivos nuevos (Untracked)
-    # Git diff normal no ve archivos nuevos hasta que haces 'git add'.
-    # Aquí los leemos manualmente para que la IA sepa que existen.
+    if [[ -n "$staged_diff" ]]; then
+        context+=$'\n\n=== CAMBIOS EN STAGING (Listos para commit) ===\n'
+        context+="$staged_diff"
+    fi
+
+    # --- B. Cambios UNSTAGED (Modificados pero no agregados) ---
+    local unstaged_diff
+    unstaged_diff=$(git diff --word-diff)
+    
+    if [[ -n "$unstaged_diff" ]]; then
+        context+=$'\n\n=== CAMBIOS UNSTAGED (Trabajo en progreso) ===\n'
+        context+="$unstaged_diff"
+    fi
+    
+    # --- C. Archivos NUEVOS (Untracked) ---
     local untracked_files
     untracked_files=$(git ls-files --others --exclude-standard)
 
     if [ -n "$untracked_files" ]; then
-        context+=$'\n\n==================================================\n'
-        context+=$'⚠️  ARCHIVOS NUEVOS (AÚN NO RASTREADOS):\n'
-        context+=$'==================================================\n'
+        context+=$'\n\n=== ARCHIVOS NUEVOS (AÚN NO RASTREADOS) ===\n'
         
         # Iteramos sobre cada archivo nuevo
         for file in $untracked_files; do
