@@ -23,9 +23,9 @@ echo ""
 gum style --foreground 99 "Vamos a configurar tu identidad y seguridad paso a paso."
 echo ""
 
-# ==============================================================================
+# ==========================================
 # PASO 1: GESTIÓN DE CUENTA GITHUB
-# ==============================================================================
+# ==========================================
 gum style --foreground 212 "1. Autenticación con GitHub"
 
 NEEDS_LOGIN=true
