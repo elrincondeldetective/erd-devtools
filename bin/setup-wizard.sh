@@ -73,7 +73,8 @@ done
 
 # --- FIX: MANEJO DE NO-TTY (P0) ---
 # Si no hay terminal interactiva (CI/Script), forzamos verify-only o fallamos
-if [ ! -t 0 ] && [ "$VERIFY_ONLY" != true ]; then
+# FIX: usar is_tty (stdin + stdout) en vez de solo -t 0
+if ! is_tty && [ "$VERIFY_ONLY" != true ]; then
     echo "⚠️ No se detectó terminal interactiva (TTY)."
     echo "   Cambiando automáticamente a modo --verify-only."
     VERIFY_ONLY=true

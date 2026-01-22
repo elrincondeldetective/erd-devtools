@@ -61,7 +61,8 @@ export SIMPLE_MODE=false
 
 # 4.1) Asegura main como rama por defecto para futuros repos
 # (Lo ponemos antes de las validaciones para asegurar que se ejecute siempre)
-git config --global init.defaultBranch main >/dev/null
+# FIX: No permitir que un fallo de git config tumbe scripts con set -e (ej. setup-wizard)
+git config --global init.defaultBranch main >/dev/null 2>&1 || true
 
 # Si no hay perfiles definidos en la config, activamos modo simple
 if [ ${#PROFILES[@]} -eq 0 ]; then
