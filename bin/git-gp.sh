@@ -1,77 +1,49 @@
 #!/usr/bin/env bash
-# /webapps/erd-ecosystem/.devtools/git-gp.sh
+# /webapps/erd-ecosystem/.devtools/bin/git-gp.sh
 set -euo pipefail
+IFS=$'\n\t'
 
-# 1. Obtener contexto de Git
+# ==============================================================================
+# 1. BOOTSTRAP DE LIBRERÍAS
+# ==============================================================================
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="${SCRIPT_DIR}/../lib"
+
+source "${LIB_DIR}/utils.sh"       # Logs (log_info, log_warn)
+source "${LIB_DIR}/git-context.sh" # Lógica de extracción de diffs y tickets
+source "${LIB_DIR}/ai-prompts.sh"  # Templates de Prompts para la IA
+
+# ==============================================================================
+# 2. RECOLECCIÓN DE DATOS (CONTEXTO)
+# ==============================================================================
+log_info "🤖 La IA está analizando tus cambios y archivos nuevos..."
+
 BRANCH_NAME=$(git branch --show-current)
-CHANGES=$(git diff --word-diff)
 
-# 2. INTELIGENCIA: Leer archivos NUEVOS (que git diff no ve)
-UNTRACKED_FILES=$(git ls-files --others --exclude-standard)
+# Usamos la función de la librería git-context.sh
+CHANGES=$(get_full_context_diff)
 
-if [ -n "$UNTRACKED_FILES" ]; then
-    CHANGES+=$'\n\n==================================================\n'
-    CHANGES+=$'⚠️  ARCHIVOS NUEVOS (AÚN NO RASTREADOS):\n'
-    CHANGES+=$'==================================================\n'
-    
-    # Iteramos sobre cada archivo nuevo
-    # shellcheck disable=SC2068
-    for file in $UNTRACKED_FILES; do
-        # Solo leemos si es texto (evitamos imágenes o binarios)
-        if grep -qI . "$file" 2>/dev/null; then
-            CHANGES+=$"\n--- CONTENIDO DE: $file ---\n"
-            CHANGES+=$(cat "$file")
-            CHANGES+=$"\n----------------------------------\n"
-        else
-            CHANGES+=$"\n--- ARCHIVO BINARIO: $file ---\n"
-        fi
-    done
+# Validación: Si no hay nada que commitear, avisamos y salimos
+if [ -z "$CHANGES" ]; then
+    log_warn "No detecté cambios pendientes (staged, unstaged o untracked)."
+    log_info "Tip: Haz cambios en algún archivo antes de pedir ayuda a la IA."
+    exit 0
 fi
 
-# 3. Detectar número de Ticket/Issue automáticamente (Silencioso)
-# Busca números en la rama (ej: feature/45-login -> detecta 45)
-DETECTED_ISSUE=$(echo "$BRANCH_NAME" | grep -oE '[0-9]+' | head -n1 || echo "")
-
-# 4. Mensajes para ti (En Español)
-echo "🤖 La IA está analizando tus cambios y archivos nuevos..."
+# Detectamos ticket desde el nombre de la rama
+DETECTED_ISSUE=$(get_detected_issue "$BRANCH_NAME")
 
 if [ -n "$DETECTED_ISSUE" ]; then
-    echo "ℹ️  Detecté el Ticket #$DETECTED_ISSUE en el nombre de tu rama."
+    log_info "ℹ️  Detecté el Ticket #$DETECTED_ISSUE en la rama."
 fi
 
-# 5. El Prompt para la IA (Instrucción en Español)
-cat <<EOF
+# ==============================================================================
+# 3. GENERACIÓN DEL PROMPT
+# ==============================================================================
 
-Actúa como un experto en DevOps y Conventional Commits.
-Tu objetivo es ayudarme a guardar mi trabajo con un mensaje claro y profesional EN ESPAÑOL.
+# Generamos el texto usando la librería ai-prompts.sh y lo enviamos a stdout
+generate_gp_prompt "$BRANCH_NAME" "$DETECTED_ISSUE" "$CHANGES"
 
-Analiza el código que te paso abajo (diferencias y archivos nuevos).
-
-CONTEXTO:
-- Rama actual: $BRANCH_NAME
-- Ticket/Issue ID: ${DETECTED_ISSUE:-"Ninguno"}
-
-TU TAREA:
-1. Entiende qué hice en el código.
-2. Detecta automáticamente si hay cambios peligrosos (BREAKING CHANGES) que rompan compatibilidad.
-3. Si hay un ID de Ticket, agrégalo al final como "Refs: #Numero".
-4. Escribe el mensaje del commit TOTALMENTE EN ESPAÑOL.
-
-FORMATO DEL MENSAJE:
-tipo(ámbito): descripción corta y clara en español
-
-[Cuerpo opcional: explica brevemente el porqué de los cambios, solo si es necesario]
-
-[Footer opcional: BREAKING CHANGE o Refs]
-
-SALIDA REQUERIDA:
-Dame SOLAMENTE el comando final para copiar y pegar en mi terminal.
-Usa mi alias 'git acp'. Ejemplo:
-
-git acp "feat(usuario): agrega validación en el formulario de registro"
-
-CÓDIGO A ANALIZAR:
-==================================================
-$CHANGES
-==================================================
-EOF
+# (Opcional) Mensaje final para guiar al usuario
+echo
+log_info "Copia el bloque de arriba y pégalo en tu IA de confianza."
