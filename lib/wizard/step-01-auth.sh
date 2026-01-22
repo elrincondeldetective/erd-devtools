@@ -6,8 +6,8 @@ run_step_auth() {
 
     local needs_login=true
 
-    # 1. Verificar estado actual
-    if gh auth status >/dev/null 2>&1; then
+    # 1. Verificar estado actual (FIX: Host explícito para evitar ambigüedad)
+    if gh auth status --hostname github.com >/dev/null 2>&1; then
         local current_user
         current_user=$(gh api user -q ".login")
         ui_success "Sesión activa detectada: $current_user"
@@ -23,8 +23,8 @@ run_step_auth() {
         if [[ "$action" == "Continuar"* ]]; then
             needs_login=false
         else
-            # Logout forzado para limpiar estado
-            gh auth logout >/dev/null 2>&1 || true
+            # Logout forzado para limpiar estado (FIX: Host explícito)
+            gh auth logout --hostname github.com >/dev/null 2>&1 || true
             needs_login=true
         fi
     fi

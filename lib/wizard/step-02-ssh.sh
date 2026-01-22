@@ -7,15 +7,17 @@ run_step_ssh() {
     # Variable global que exportaremos para los siguientes pasos
     export SSH_KEY_FINAL=""
     
-    local existing_keys
-    existing_keys=$(find "$HOME/.ssh" -maxdepth 1 -name "id_*.pub" 2>/dev/null || true)
+    # FIX: Usamos mapfile para manejar arrays de archivos correctamente (P1)
+    # Esto previene errores si hay espacios en las rutas
+    local -a existing_keys_array
+    mapfile -t existing_keys_array < <(find "$HOME/.ssh" -maxdepth 1 -name "id_*.pub" 2>/dev/null)
     
     local choice_gen="🔑 Generar NUEVA llave (Recomendado)"
     local choice_sel="📂 Seleccionar llave existente"
     local ssh_choice
 
     # 1. Decisión: Generar vs Seleccionar
-    if [ -n "$existing_keys" ]; then
+    if [ ${#existing_keys_array[@]} -gt 0 ]; then
         ui_info "Selecciona cómo quieres firmar y autenticarte:"
         ssh_choice=$(gum choose "$choice_gen" "$choice_sel")
     else
@@ -26,7 +28,28 @@ run_step_ssh() {
     if [[ "$ssh_choice" == "$choice_gen" ]]; then
         generate_new_ssh_key
     else
-        select_existing_ssh_key "$existing_keys"
+        # Pasamos el array indirectamente o lo re-leemos en la función
+        select_existing_ssh_key
+    fi
+
+    # --- FIX: CARGA EN AGENTE SSH (P0) ---
+    # Es crítico cargar la llave en el agente ahora mismo, si no, 
+    # el paso de validación posterior (ssh -T) fallará aunque la llave exista.
+    ui_spinner "Cargando llave en el agente SSH..." sleep 1
+    
+    # Iniciar agente si no existe
+    if [ -z "$SSH_AUTH_SOCK" ]; then
+        eval "$(ssh-agent -s)" >/dev/null
+    fi
+    
+    # Agregar la llave privada (quitamos .pub del path)
+    if [ -f "$SSH_KEY_FINAL" ]; then
+        # Borramos identidades viejas o rotas si es necesario, o solo agregamos
+        chmod 600 "$SSH_KEY_FINAL"
+        ssh-add "$SSH_KEY_FINAL" >/dev/null 2>&1
+        ui_success "Llave cargada en memoria (ssh-agent)."
+    else
+        ui_warn "No se encontró la llave privada local ($SSH_KEY_FINAL). El agente no la cargó."
     fi
 
     # 3. Subida a GitHub
@@ -61,10 +84,12 @@ generate_new_ssh_key() {
 }
 
 select_existing_ssh_key() {
-    local keys="$1"
-    local selected_pub
+    # FIX: Re-leemos el array localmente para asegurar integridad con gum choose
+    local -a keys
+    mapfile -t keys < <(find "$HOME/.ssh" -maxdepth 1 -name "id_*.pub" 2>/dev/null)
     
-    selected_pub=$(gum choose $keys --header "Selecciona la llave pública a usar:")
+    local selected_pub
+    selected_pub=$(gum choose "${keys[@]}" --header "Selecciona la llave pública a usar:")
     SSH_KEY_FINAL="${selected_pub%.pub}"
     
     ui_success "Has seleccionado: $SSH_KEY_FINAL"

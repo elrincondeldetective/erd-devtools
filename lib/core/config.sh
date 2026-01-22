@@ -59,6 +59,10 @@ export POST_PUSH_FLOW="${POST_PUSH_FLOW:-true}"
 export push_target="origin"
 export SIMPLE_MODE=false
 
+# 4.1) Asegura main como rama por defecto para futuros repos
+# (Lo ponemos antes de las validaciones para asegurar que se ejecute siempre)
+git config --global init.defaultBranch main >/dev/null
+
 # Si no hay perfiles definidos en la config, activamos modo simple
 if [ ${#PROFILES[@]} -eq 0 ]; then
   SIMPLE_MODE=true
@@ -67,7 +71,8 @@ if [ ${#PROFILES[@]} -eq 0 ]; then
   # Si estamos corriendo el wizard (setup-wizard.sh), no bloqueamos la ejecución 
   # si falta user.name, porque el wizard es quien se encargará de configurarlo.
   if [ "${DEVTOOLS_WIZARD_MODE:-false}" == "true" ]; then
-      return 0
+      # FIX: Return seguro que funciona tanto si se hace source como si se ejecuta
+      return 0 2>/dev/null || exit 0
   fi
 
   # Validación de seguridad mínima para modo simple
@@ -78,6 +83,3 @@ if [ ${#PROFILES[@]} -eq 0 ]; then
     exit 1
   fi
 fi
-
-# 2.1) Asegura main como rama por defecto para futuros repos (Side effect útil)
-git config --global init.defaultBranch main >/dev/null

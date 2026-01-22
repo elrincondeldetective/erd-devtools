@@ -2,6 +2,10 @@
 # /webapps/erd-ecosystem/.devtools/bin/setup-wizard.sh
 set -e
 
+# --- FIX: TRAP DE ERRORES (P2) ---
+# Si falla algo inesperado, muestra la línea y el comando
+trap 'echo "❌ ERROR FATAL en línea $LINENO. Código de salida: $?" >&2' ERR
+
 # --- FIX: ACTIVA MODO WIZARD ---
 # Esto avisa a lib/core/config.sh que no debe abortar si falta configuración.
 export DEVTOOLS_WIZARD_MODE=true
@@ -31,8 +35,15 @@ source "${WIZARD_DIR}/step-04-profile.sh"
 # 2. VALIDACIONES DE ENTORNO
 # ==============================================================================
 ensure_repo
-# Nos aseguramos de ejecutar desde la raíz para que las rutas relativas funcionen
-cd "$(git rev-parse --show-toplevel)"
+
+# --- FIX: SOPORTE DE SUBMÓDULOS / SUPERPROYECTO (P1) ---
+# Si estamos corriendo dentro del submódulo .devtools, queremos ir a la raíz real del proyecto
+SUPER_ROOT="$(git rev-parse --show-superproject-working-tree 2>/dev/null || echo "")"
+if [ -n "$SUPER_ROOT" ]; then
+    cd "$SUPER_ROOT"
+else
+    cd "$(git rev-parse --show-toplevel)"
+fi
 
 # --- FIX: CHECK DE DEPENDENCIAS CRÍTICAS ---
 # Fallar rápido si faltan herramientas esenciales antes de intentar usarlas
@@ -46,6 +57,9 @@ for tool in $REQUIRED_TOOLS; do
 done
 
 MARKER_FILE=".devtools/.setup_completed"
+# Asegurar que la carpeta del marker exista
+mkdir -p "$(dirname "$MARKER_FILE")"
+
 FORCE=false
 VERIFY_ONLY=false
 
@@ -56,6 +70,14 @@ for arg in "$@"; do
         --verify-only|--verify) VERIFY_ONLY=true ;;
     esac
 done
+
+# --- FIX: MANEJO DE NO-TTY (P0) ---
+# Si no hay terminal interactiva (CI/Script), forzamos verify-only o fallamos
+if [ ! -t 0 ] && [ "$VERIFY_ONLY" != true ]; then
+    echo "⚠️ No se detectó terminal interactiva (TTY)."
+    echo "   Cambiando automáticamente a modo --verify-only."
+    VERIFY_ONLY=true
+fi
 
 # Detección automática: Si ya existe el marker y no forzamos, pasamos a modo verificación
 if [ -f "$MARKER_FILE" ] && [ "$FORCE" != true ]; then
@@ -73,15 +95,25 @@ if [ "$VERIFY_ONLY" = true ]; then
     CURRENT_NAME="$(git_get global user.name)"
     if [ -z "$CURRENT_NAME" ]; then CURRENT_NAME="$(git_get local user.name)"; fi
     
+    # --- FIX: VERIFICAR TAMBIÉN GH AUTH (P2) ---
+    ui_spinner "Verificando sesión GH CLI..." sleep 1
+    if ! gh auth status --hostname github.com >/dev/null 2>&1; then
+        ui_error "GH CLI no autenticado."
+        ui_info "Ejecuta './bin/setup-wizard.sh --force' para loguearte."
+        exit 1
+    else
+        ui_success "GH CLI: Autenticado."
+    fi
+
     # Check rápido de SSH
     # --- FIX: NO USAR SET -E CON PIPES QUE PUEDEN FALLAR ---
     # Usamos ui_spinner solo visualmente, y luego ejecutamos el comando dentro del if
     ui_spinner "Verificando conexión SSH..." sleep 1
     
     if ssh -T git@github.com -o StrictHostKeyChecking=accept-new 2>&1 | grep -q "successfully authenticated"; then
-        ui_success "Conexión a GitHub: OK"
+        ui_success "Conexión a GitHub (SSH): OK"
     else
-        ui_error "Conexión a GitHub: FALLÓ"
+        ui_error "Conexión a GitHub (SSH): FALLÓ"
         ui_info "Esto puede ocurrir si expiró tu sesión o cambió tu llave."
         echo ""
         ui_warn "🔧 SOLUCIÓN: Ejecuta './bin/setup-wizard.sh --force' para reparar."

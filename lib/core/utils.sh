@@ -18,6 +18,12 @@ log_success() { echo -e "${GREEN}✅ $1${NC}"; }
 log_error()   { echo -e "${RED}❌ $1${NC}"; >&2; }
 log_warn()    { echo -e "${YELLOW}⚠️  $1${NC}"; }
 
+# Termina la ejecución con error (Exit code 1)
+die() {
+    log_error "$1"
+    exit 1
+}
+
 # ==============================================================================
 # 3. SYSTEM & TERMINAL CHECKS
 # ==============================================================================
@@ -29,19 +35,45 @@ have_cmd() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Check centralizado para saber si podemos usar GUM (TTY + instalado)
+have_gum_ui() {
+    if is_tty && have_cmd gum; then
+        return 0
+    else
+        return 1
+    fi
+}
+
 # ==============================================================================
-# 4. INTERACCIÓN CON EL USUARIO (UI)
+# 4. EJECUCIÓN SEGURA (PIPELINE SAFE)
 # ==============================================================================
 
-# Pregunta Sí/No robusta (soporta gum y fallback a read)
+# Ejecuta un comando permitiendo que falle sin abortar el script (incluso con set -e)
+# Uso: if try_cmd grep -q "foo" file; then ...
+try_cmd() {
+    set +e
+    "$@"
+    local rc=$?
+    set -e
+    return $rc
+}
+
+# ==============================================================================
+# 5. INTERACCIÓN CON EL USUARIO (UI)
+# ==============================================================================
+
+# Pregunta Sí/No robusta (soporta gum, fallback a read y modo CI)
 # Uso: ask_yes_no "¿Quieres continuar?"
 ask_yes_no() {
     local q="$1"
-    if is_tty && have_cmd gum; then 
+    
+    # 1. Si hay UI rica, usamos Gum
+    if have_gum_ui; then 
         gum confirm "$q"
         return $?
     fi
     
+    # 2. Si es TTY simple, usamos read
     if is_tty; then 
         local ans
         read -r -p "$q [S/n]: " ans
@@ -50,8 +82,13 @@ ask_yes_no() {
         return $?
     fi
     
-    # Si no es TTY (script automático), asumimos NO por seguridad, 
-    # a menos que se implemente un flag --yes global.
+    # 3. Modo No-Interactivo (CI/Scripts)
+    # Por defecto asumimos NO, salvo que se active flag explícito
+    if [[ "${DEVTOOLS_ASSUME_YES:-0}" == "1" ]]; then
+        return 0 # YES
+    fi
+    
+    # Default safe
     return 1
 }
 
@@ -61,7 +98,7 @@ confirm_action() {
 }
 
 # ==============================================================================
-# 5. EJECUCIÓN DE COMANDOS
+# 6. EJECUCIÓN DE COMANDOS
 # ==============================================================================
 
 # Ejecuta un comando mostrando qué se está haciendo y controlando errores
@@ -71,17 +108,12 @@ run_cmd() {
     [[ -n "$cmd" ]] || return 2
     echo; echo "▶️ Ejecutando: $cmd"
     
-    # Desactivamos set -e temporalmente para capturar el error nosotros mismos
-    set +e
-    eval "$cmd"
-    local rc=$?
-    set -e
-    
-    return $rc
+    # Usamos try_cmd para manejar set -e de forma segura
+    try_cmd eval "$cmd"
 }
 
 # ==============================================================================
-# 6. SUPERREPO GUARD (Protección contra ejecución en raíz de monorepo)
+# 7. SUPERREPO GUARD (Protección contra ejecución en raíz de monorepo)
 # ==============================================================================
 
 # Verifica si existe el archivo .no-acp-here y bloquea la ejecución
@@ -133,7 +165,7 @@ check_superrepo_guard() {
 }
 
 # ==============================================================================
-# 7. VISUALIZACIÓN (Progress Bar)
+# 8. VISUALIZACIÓN (Progress Bar)
 # ==============================================================================
 
 # Muestra la barra de progreso de commits diarios

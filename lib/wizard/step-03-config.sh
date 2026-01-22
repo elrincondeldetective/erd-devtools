@@ -90,18 +90,37 @@ run_step_git_config() {
     # ==========================================================================
     # 4. CONFIGURACIÓN DE FIRMA (SSH SIGNING)
     # ==========================================================================
-    # FIX: Siempre aplicamos la configuración si venimos del paso 2.
-    # Eliminamos el chequeo previo que evitaba actualizar si ya existía una llave vieja.
     
     if [ -n "$SSH_KEY_FINAL" ]; then
-        ui_info "Activando firma de commits con SSH..."
-        
-        git config --global --replace-all gpg.format ssh
-        git config --global --replace-all user.signingkey "$SIGNING_KEY"
-        git config --global --replace-all commit.gpgsign true
-        git config --global --replace-all tag.gpgsign true
-        
-        ui_success "Firma configurada en GLOBAL (Key: $SIGNING_KEY)."
+        # --- FIX: CONFIRMACIÓN ANTES DE PISAR (P2) ---
+        local current_key
+        current_key=$(git_get global user.signingkey)
+        local do_configure=true
+
+        # Si ya existe una llave y es distinta a la nueva, preguntamos.
+        if [ -n "$current_key" ] && [ "$current_key" != "$SIGNING_KEY" ]; then
+            ui_warn "⚠️ Detectamos otra llave de firma configurada globalmente."
+            echo "   Actual: $current_key"
+            echo "   Nueva:  $SIGNING_KEY"
+            
+            if ! gum confirm "¿Deseas reemplazarla por la nueva?"; then
+                ui_info "Manteniendo configuración anterior. (No se modificó git config global)."
+                # Ajustamos la variable para que el perfil (Step 04) sea consistente con lo que quedó en git
+                SIGNING_KEY="$current_key"
+                do_configure=false
+            fi
+        fi
+
+        if [ "$do_configure" = true ]; then
+            ui_info "Activando firma de commits con SSH..."
+            
+            git config --global --replace-all gpg.format ssh
+            git config --global --replace-all user.signingkey "$SIGNING_KEY"
+            git config --global --replace-all commit.gpgsign true
+            git config --global --replace-all tag.gpgsign true
+            
+            ui_success "Firma configurada en GLOBAL (Key: $SIGNING_KEY)."
+        fi
     else
         # Fallback por si este script se corre aislado (sin paso 2)
         local current_key
