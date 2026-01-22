@@ -9,7 +9,7 @@ IFS=$'\n\t'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="${SCRIPT_DIR}/../lib"
 
-source "${LIB_DIR}/utils.sh"       # Logs (log_info, log_warn)
+source "${LIB_DIR}/core/utils.sh"       # Logs (log_info, log_warn)
 source "${LIB_DIR}/git-context.sh" # Lógica de extracción de diffs y tickets
 source "${LIB_DIR}/ai-prompts.sh"  # Templates de Prompts para la IA
 

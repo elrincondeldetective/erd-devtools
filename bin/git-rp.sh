@@ -9,8 +9,8 @@ IFS=$'\n\t'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="${SCRIPT_DIR}/../lib"
 
-source "${LIB_DIR}/utils.sh"       # UI: log_warn, log_error, ask_yes_no
-source "${LIB_DIR}/git-core.sh"    # Git: ensure_repo
+source "${LIB_DIR}/core/utils.sh"       # UI: log_warn, log_error, ask_yes_no
+source "${LIB_DIR}/core/git-ops.sh"    # Git: ensure_repo
 source "${LIB_DIR}/git-flow.sh"    # Logic: is_protected_branch
 
 # ==============================================================================
