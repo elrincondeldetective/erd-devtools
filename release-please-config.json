@@ -1,0 +1,9 @@
+{
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "package-name": "erd-devtools",
+      "version-file": "lib/version.sh" 
+    }
+  }
+}
