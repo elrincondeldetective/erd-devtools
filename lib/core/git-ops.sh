@@ -2,6 +2,39 @@
 # /webapps/erd-ecosystem/.devtools/lib/core/git-ops.sh
 
 # ==============================================================================
+# 0. HELPERS DE CONFIGURACIÓN
+# ==============================================================================
+
+# Obtiene un valor de configuración de git de forma segura (sin error si falta)
+# Uso: git_get <local|global|system> <key>
+git_get() {
+    local scope="$1"
+    local key="$2"
+    git config --"$scope" --get "$key" 2>/dev/null || true
+}
+
+# Verifica si una clave tiene múltiples valores definidos en un scope
+# Uso: has_multiple_values <local|global|system> <key>
+# Retorna: 0 (true) si hay >1 valor, 1 (false) si hay 0 o 1.
+has_multiple_values() {
+    local scope="$1"
+    local key="$2"
+    local count
+    count="$(git config --"$scope" --get-all "$key" 2>/dev/null | wc -l)"
+    if [ "$count" -gt 1 ]; then return 0; else return 1; fi
+}
+
+# Verifica si al menos uno de los argumentos pasados no está vacío
+# Uso: any_set "$var1" "$var2" ...
+# Retorna: 0 (true) si encuentra algo, 1 (false) si todo está vacío.
+any_set() {
+    for var in "$@"; do
+        if [ -n "$var" ]; then return 0; fi
+    done
+    return 1
+}
+
+# ==============================================================================
 # 1. VALIDACIONES DE ESTADO (GUARDS)
 # ==============================================================================
 
@@ -34,6 +67,7 @@ ensure_clean_git() {
 # Detecta la raíz real de trabajo:
 # - Si es un submódulo dentro de un superproyecto, devuelve el superproyecto.
 # - Si es un repo normal, devuelve el toplevel.
+# - Si no hay repo, devuelve el directorio actual (pwd).
 detect_workspace_root() {
     local super
     super="$(git rev-parse --show-superproject-working-tree 2>/dev/null || echo "")"

@@ -11,20 +11,27 @@ trap 'echo "❌ ERROR FATAL en línea $LINENO. Código de salida: $?" >&2' ERR
 export DEVTOOLS_WIZARD_MODE=true
 
 # ==============================================================================
-# 1. BOOTSTRAP DE LIBRERÍAS
+# 1. BOOTSTRAP DE LIBRERÍAS (ORDEN CORREGIDO)
 # ==============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_BASE="${SCRIPT_DIR}/../lib"
 
-# Core (Orden estricto)
+# 1.1 Cargar Utils y Git-Ops primero (para tener detect_workspace_root)
 source "${LIB_BASE}/core/utils.sh"
-source "${LIB_BASE}/core/config.sh"
 source "${LIB_BASE}/core/git-ops.sh"
 
-# UI
+# 1.2 Resolver Root Real (Superproyecto) ANTES de cargar config
+# Esto evita que config.sh calcule mal PROJECT_ROOT si estamos dentro del submódulo
+REAL_ROOT="$(detect_workspace_root)"
+if [ -d "$REAL_ROOT" ]; then
+    cd "$REAL_ROOT"
+fi
+
+# 1.3 Ahora sí, cargar Configuración y UI (con el PWD correcto)
+source "${LIB_BASE}/core/config.sh"
 source "${LIB_BASE}/ui/styles.sh"
 
-# Módulos del Wizard
+# 1.4 Cargar Módulos del Wizard
 WIZARD_DIR="${LIB_BASE}/wizard"
 source "${WIZARD_DIR}/step-01-auth.sh"
 source "${WIZARD_DIR}/step-02-ssh.sh"
@@ -32,38 +39,14 @@ source "${WIZARD_DIR}/step-03-config.sh"
 source "${WIZARD_DIR}/step-04-profile.sh"
 
 # ==============================================================================
-# 2. VALIDACIONES DE ENTORNO
+# 2. PARSEO DE ARGUMENTOS & VALIDACIONES
 # ==============================================================================
-ensure_repo
 
-# --- FIX: SOPORTE DE SUBMÓDULOS / SUPERPROYECTO (P1) ---
-# Si estamos corriendo dentro del submódulo .devtools, queremos ir a la raíz real del proyecto
-SUPER_ROOT="$(git rev-parse --show-superproject-working-tree 2>/dev/null || echo "")"
-if [ -n "$SUPER_ROOT" ]; then
-    cd "$SUPER_ROOT"
-else
-    cd "$(git rev-parse --show-toplevel)"
-fi
-
-# --- FIX: CHECK DE DEPENDENCIAS CRÍTICAS ---
-# Fallar rápido si faltan herramientas esenciales antes de intentar usarlas
-REQUIRED_TOOLS="git gh gum ssh ssh-keygen"
-for tool in $REQUIRED_TOOLS; do
-    if ! command -v "$tool" >/dev/null 2>&1; then
-        echo "❌ Error Crítico: Falta la herramienta '$tool'."
-        echo "   Por favor instálala (o entra en el devbox) antes de continuar."
-        exit 1
-    fi
-done
-
-MARKER_FILE=".devtools/.setup_completed"
-# Asegurar que la carpeta del marker exista
-mkdir -p "$(dirname "$MARKER_FILE")"
-
+# Parseo de argumentos (Movido arriba para decidir dependencias)
 FORCE=false
 VERIFY_ONLY=false
+MARKER_FILE=".devtools/.setup_completed"
 
-# Parseo de argumentos
 for arg in "$@"; do
     case "$arg" in
         --force|-f) FORCE=true ;;
@@ -72,8 +55,7 @@ for arg in "$@"; do
 done
 
 # --- FIX: MANEJO DE NO-TTY (P0) ---
-# Si no hay terminal interactiva (CI/Script), forzamos verify-only o fallamos
-# FIX: usar is_tty (stdin + stdout) en vez de solo -t 0
+# Si no hay terminal interactiva (CI/Script), forzamos verify-only
 if ! is_tty && [ "$VERIFY_ONLY" != true ]; then
     echo "⚠️ No se detectó terminal interactiva (TTY)."
     echo "   Cambiando automáticamente a modo --verify-only."
@@ -85,6 +67,28 @@ if [ -f "$MARKER_FILE" ] && [ "$FORCE" != true ]; then
     VERIFY_ONLY=true
 fi
 
+# --- FIX: CHECK DE DEPENDENCIAS CONDICIONALES ---
+# Si es verify-only, no exigimos 'gum'
+if [ "$VERIFY_ONLY" = true ]; then
+    REQUIRED_TOOLS="git gh ssh grep"
+else
+    REQUIRED_TOOLS="git gh gum ssh ssh-keygen"
+fi
+
+for tool in $REQUIRED_TOOLS; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "❌ Error Crítico: Falta la herramienta '$tool'."
+        echo "   Por favor instálala (o entra en el devbox) antes de continuar."
+        exit 1
+    fi
+done
+
+# Asegurar que la carpeta del marker exista
+mkdir -p "$(dirname "$MARKER_FILE")"
+
+# Validar repo antes de seguir
+ensure_repo
+
 # ==============================================================================
 # 3. MODO VERIFICACIÓN (FAST PATH)
 # ==============================================================================
@@ -92,13 +96,9 @@ if [ "$VERIFY_ONLY" = true ]; then
     ui_step_header "🕵️‍♂️ MODO VERIFICACIÓN"
     ui_info "El setup ya se realizó anteriormente."
     
-    # Check rápido de usuario
-    # FIX: git_get vive en core/git-ops.sh en tu base original; si el archivo actual no lo trae,
-    # caía en "git_get: orden no encontrada". Hacemos fallback robusto a `git config`.
-    CURRENT_NAME="$(git_get global user.name 2>/dev/null || true)"
-    if [ -z "$CURRENT_NAME" ]; then CURRENT_NAME="$(git_get local user.name 2>/dev/null || true)"; fi
-    if [ -z "$CURRENT_NAME" ]; then CURRENT_NAME="$(git config --global --get user.name 2>/dev/null || true)"; fi
-    if [ -z "$CURRENT_NAME" ]; then CURRENT_NAME="$(git config --local --get user.name 2>/dev/null || true)"; fi
+    # Check rápido de usuario usando git_get (Helpers nuevos)
+    CURRENT_NAME="$(git_get global user.name)"
+    if [ -z "$CURRENT_NAME" ]; then CURRENT_NAME="$(git_get local user.name)"; fi
     
     # --- FIX: VERIFICAR TAMBIÉN GH AUTH (P2) ---
     ui_spinner "Verificando sesión GH CLI..." sleep 1
@@ -110,15 +110,24 @@ if [ "$VERIFY_ONLY" = true ]; then
         ui_success "GH CLI: Autenticado."
     fi
 
-    # Check rápido de SSH
-    # --- FIX: NO USAR SET -E CON PIPES QUE PUEDEN FALLAR ---
-    # Usamos ui_spinner solo visualmente, y luego ejecutamos el comando dentro del if
-    ui_spinner "Verificando conexión SSH..." sleep 1
+    # Check rápido de SSH (Realista)
+    # Intentamos leer el host configurado en .git-acprc para no probar github.com si usan alias
+    TEST_HOST="github.com"
+    if [ -f ".devtools/.git-acprc" ]; then
+        # Extraer primer host de PROFILES (posición 6 en schema V1: display;git;email;sign;push;HOST;...)
+        FIRST_HOST_IN_PROFILE=$(grep "PROFILES+=" .devtools/.git-acprc | head -n1 | awk -F';' '{print $6}')
+        if [ -n "$FIRST_HOST_IN_PROFILE" ]; then
+             TEST_HOST="$FIRST_HOST_IN_PROFILE"
+        fi
+    fi
+
+    # Usamos ui_spinner solo visualmente
+    ui_spinner "Verificando conexión SSH ($TEST_HOST)..." sleep 1
     
-    if ssh -T git@github.com -o StrictHostKeyChecking=accept-new 2>&1 | grep -q "successfully authenticated"; then
-        ui_success "Conexión a GitHub (SSH): OK"
+    if ssh -T "git@$TEST_HOST" -o StrictHostKeyChecking=accept-new 2>&1 | grep -qE "(successfully authenticated|Hi)"; then
+        ui_success "Conexión a GitHub (SSH): OK ($TEST_HOST)"
     else
-        ui_error "Conexión a GitHub (SSH): FALLÓ"
+        ui_error "Conexión a GitHub (SSH): FALLÓ para $TEST_HOST"
         ui_info "Esto puede ocurrir si expiró tu sesión o cambió tu llave."
         echo ""
         ui_warn "🔧 SOLUCIÓN: Ejecuta './bin/setup-wizard.sh --force' para reparar."

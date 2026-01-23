@@ -4,7 +4,14 @@
 # ==============================================================================
 # 1. DETECCIÓN DEL ENTORNO
 # ==============================================================================
-PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo ".")"
+
+# --- FIX: DETECCIÓN ROBUSTA DE ROOT (Submódulos vs Superproyecto) ---
+# Intentamos obtener la raíz del superproyecto (si esto es un submódulo .devtools).
+# Si no, caemos al toplevel normal o al directorio actual.
+PROJECT_ROOT="$(git rev-parse --show-superproject-working-tree 2>/dev/null || echo "")"
+if [ -z "$PROJECT_ROOT" ]; then
+    PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+fi
 
 # Rutas de configuración con prioridad:
 # 1. Específica del toolset (.devtools)
