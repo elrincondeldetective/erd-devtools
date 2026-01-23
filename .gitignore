@@ -42,3 +42,4 @@ crash.log
 .devtools/.setup_completed
 .env
 devbox.lock
+.setup_completed 
