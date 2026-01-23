@@ -1,0 +1,42 @@
+# /webapps/erd-ecosystem/.devtools/.github/workflows/rc-tags.yml
+name: rc-tags
+
+on:
+  push:
+    tags:
+      - "v*-rc*"
+
+permissions:
+  contents: write
+
+jobs:
+  verify-and-prerelease:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify RC tag is from staging
+        run: |
+          git fetch origin staging:refs/remotes/origin/staging --force
+          TAG="${GITHUB_REF_NAME}"
+          TAG_SHA="$(git rev-list -n1 "$TAG")"
+
+          git merge-base --is-ancestor "$TAG_SHA" origin/staging
+
+      - name: Extract tag notes
+        id: notes
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          NOTES="$(git tag -l --format='%(contents)' "$TAG")"
+          echo "notes<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$NOTES" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          prerelease: true
+          body: ${{ steps.notes.outputs.notes }}

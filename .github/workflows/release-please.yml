@@ -1,0 +1,28 @@
+# /webapps/erd-ecosystem/.devtools/.github/workflows/release-please.yml
+name: release-please
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          # Si algún día quieres que otros workflows corran desde PRs/tags creados por Release Please,
+          # usa un PAT en `token:`
+

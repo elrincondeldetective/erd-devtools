@@ -1,9 +1,12 @@
 {
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "packages": {
     ".": {
       "release-type": "simple",
       "package-name": "erd-devtools",
-      "version-file": "lib/core/version.sh" 
+      "version-file": "lib/core/version.sh",
+      "changelog-path": "CHANGELOG.md",
+      "include-v-in-tag": true
     }
   }
 }
