@@ -41,7 +41,7 @@ ensure_key_added() {
   local key="$1"
   # Expansión de tilde si es necesario
   case "$key" in
-    "~/"*) key="${HOME}/${key#~/}" ;;
+     "~/"*) key="${HOME}/${key#~/}" ;;
   esac
   key="${key/#$HOME\/~\//$HOME/}"
 
@@ -189,12 +189,25 @@ setup_git_identity() {
       
       [[ -z "${selected_profile_config:-}" ]] && { echo "❌ Perfil no encontrado."; exit 1; }
 
-      # Desempaquetar perfil
-      # display_name;git_name;git_email;gpg_key;push_target;ssh_host_alias;ssh_key_path;gh_owner
-      IFS=';' read -r display_name git_name git_email gpg_key target ssh_host_alias ssh_key_path gh_owner <<< "$selected_profile_config"
+      # --- FIX: Parseo robusto con Backward Compatibility (V1 Schema) ---
+      # Schema: display_name;git_name;git_email;signing_key;push_target;ssh_host;ssh_key_path;gh_owner
+      
+      # Convertimos a array para manejar campos faltantes
+      local -a p_fields
+      IFS=';' read -r -a p_fields <<< "$selected_profile_config"
+      
+      local display_name="${p_fields[0]}"
+      local git_name="${p_fields[1]}"
+      local git_email="${p_fields[2]}"
+      local gpg_key="${p_fields[3]}"
+      # Aplicamos defaults si faltan campos (backward-compat)
+      local target="${p_fields[4]:-origin}"
+      local ssh_host_alias="${p_fields[5]:-github.com}"
+      local ssh_key_path="${p_fields[6]:-}"
+      local gh_owner="${p_fields[7]:-}"
 
       # Exportamos el target para que el script principal lo vea
-      export push_target="${target:-origin}"
+      export push_target="$target"
 
       echo "✅ Usando la identidad de '$display_name' (firmado como '$git_name')."
       git config user.name "$git_name"
@@ -219,10 +232,12 @@ setup_git_identity() {
       git config commit.gpgsign true
       git config user.signingkey "${gpg_key:-}" 2>/dev/null || true
 
-      # --- Inferencia de valores faltantes ---
-      if [[ -z "${ssh_host_alias:-}" ]]; then
-        ssh_host_alias="$(grep -E '^[[:space:]]*Host github\.com-' -A0 -h ~/.ssh/config 2>/dev/null | awk '{print $2}' | head -n1 || true)"
-        [[ -z "$ssh_host_alias" ]] && ssh_host_alias="github.com"
+      # --- Inferencia de valores faltantes (Si el perfil venía incompleto) ---
+      if [[ -z "${ssh_host_alias:-}" ]] || [[ "$ssh_host_alias" == "github.com" ]]; then
+        # Intento de inferencia desde ~/.ssh/config si no vino explícito
+        local inferred
+        inferred="$(grep -E '^[[:space:]]*Host github\.com-' -A0 -h ~/.ssh/config 2>/dev/null | awk '{print $2}' | head -n1 || true)"
+        if [[ -n "$inferred" ]]; then ssh_host_alias="$inferred"; fi
       fi
       
       if [[ -z "${gh_owner:-}" ]]; then
