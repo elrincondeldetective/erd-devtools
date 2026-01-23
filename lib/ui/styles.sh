@@ -20,6 +20,25 @@ ANSI_BLUE="\033[34m"
 ANSI_MAGENTA="\033[35m"
 
 # ==============================================================================
+# 0. FIX: AUTOSUFICIENCIA (No asumir que utils.sh fue cargado)
+# ==============================================================================
+# Solución: Si `have_gum_ui` no existe (porque alguien sourceó styles.sh sin utils.sh),
+# definimos un fallback local para evitar "command not found" y mantener robustez.
+if ! declare -F have_gum_ui >/dev/null 2>&1; then
+    have_gum_ui() {
+        [[ -t 0 && -t 1 ]] && command -v gum >/dev/null 2>&1
+    }
+fi
+
+# (Opcional) cache de estado, útil si quieres evitar recomputar en cada llamada.
+# No reemplaza `have_gum_ui`, solo expone un flag por conveniencia.
+if have_gum_ui; then
+    UI_GUM_ENABLED=1
+else
+    UI_GUM_ENABLED=0
+fi
+
+# ==============================================================================
 # 1. ELEMENTOS ESTRUCTURALES (Banners y Headers)
 # ==============================================================================
 

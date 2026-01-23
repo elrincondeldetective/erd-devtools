@@ -59,6 +59,24 @@ run_step_git_config() {
         identity_configured=true
     fi
 
+    # --- FIX (Modelo de Identidades): Preferir configuración LOCAL por repo (opcional) ---
+    # Esto ayuda cuando el usuario maneja múltiples perfiles/cuentas: el repo queda estable
+    # aunque el global cambie por otro proyecto o por la selección de perfiles en runtime.
+    # Política: si tomamos identidad desde GLOBAL y el repo no tiene identidad LOCAL, ofrecemos aplicarla.
+    if [ "$identity_configured" = true ]; then
+        if [ -z "$local_name" ] && [ -z "$local_email" ] && [ -n "$global_name" ] && [ -n "$global_email" ]; then
+            ui_info "Detectamos identidad GLOBAL pero este repo no tiene identidad LOCAL."
+            ui_info "Recomendación (multi-perfil): guardar identity local en este repo."
+            if ask_yes_no "¿Quieres aplicar '$GIT_NAME <$GIT_EMAIL>' también a nivel LOCAL (solo este repo)?"; then
+                git config --local --replace-all user.name "$GIT_NAME"
+                git config --local --replace-all user.email "$GIT_EMAIL"
+                ui_success "Identidad aplicada en LOCAL para este repo."
+            else
+                ui_info "Se mantuvo solo identidad GLOBAL (sin cambios locales)."
+            fi
+        fi
+    fi
+
     # ==========================================================================
     # 3. CONFIGURACIÓN DE IDENTIDAD (Si faltaba)
     # ==========================================================================
@@ -85,6 +103,16 @@ run_step_git_config() {
         git config --global --replace-all user.name "$GIT_NAME"
         git config --global --replace-all user.email "$GIT_EMAIL"
         ui_success "Identidad configurada en GLOBAL."
+
+        # --- FIX (Modelo de Identidades): también ofrecer identidad LOCAL al crear por primera vez ---
+        ui_info "Sugerencia: para multi-perfil, es mejor fijar también identidad LOCAL en este repo."
+        if ask_yes_no "¿Quieres aplicar esta identidad también a nivel LOCAL (solo este repo)?"; then
+            git config --local --replace-all user.name "$GIT_NAME"
+            git config --local --replace-all user.email "$GIT_EMAIL"
+            ui_success "Identidad aplicada en LOCAL para este repo."
+        else
+            ui_info "Se mantuvo solo identidad GLOBAL (sin cambios locales)."
+        fi
     fi
 
     # ==========================================================================
@@ -103,7 +131,19 @@ run_step_git_config() {
             echo "   Actual: $current_key"
             echo "   Nueva:  $SIGNING_KEY"
             
-            if ! gum confirm "¿Deseas reemplazarla por la nueva?"; then
+            # FIX (Modelo de Identidades): confirm robusto con fallback (gum o ask_yes_no)
+            local replace_ok=false
+            if have_gum_ui; then
+                if gum confirm "¿Deseas reemplazarla por la nueva?"; then
+                    replace_ok=true
+                fi
+            else
+                if ask_yes_no "¿Deseas reemplazarla por la nueva?"; then
+                    replace_ok=true
+                fi
+            fi
+
+            if [ "$replace_ok" != true ]; then
                 ui_info "Manteniendo configuración anterior. (No se modificó git config global)."
                 # Ajustamos la variable para que el perfil (Step 04) sea consistente con lo que quedó en git
                 SIGNING_KEY="$current_key"
@@ -120,6 +160,19 @@ run_step_git_config() {
             git config --global --replace-all tag.gpgsign true
             
             ui_success "Firma configurada en GLOBAL (Key: $SIGNING_KEY)."
+
+            # --- FIX (Modelo de Identidades): recomendar firma LOCAL por repo ---
+            # Esto evita que un repo quede “amarrado” al signing global cuando se usan varios perfiles.
+            ui_info "Sugerencia: para multi-perfil, es mejor fijar la firma también en LOCAL en este repo."
+            if ask_yes_no "¿Quieres aplicar la firma SSH también a nivel LOCAL (solo este repo)?"; then
+                git config --local --replace-all gpg.format ssh
+                git config --local --replace-all user.signingkey "$SIGNING_KEY"
+                git config --local --replace-all commit.gpgsign true
+                git config --local --replace-all tag.gpgsign true
+                ui_success "Firma aplicada en LOCAL para este repo."
+            else
+                ui_info "Se mantuvo firma solo en GLOBAL (sin cambios locales)."
+            fi
         fi
     else
         # Fallback por si este script se corre aislado (sin paso 2)

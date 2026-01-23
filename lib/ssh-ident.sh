@@ -149,6 +149,77 @@ remote_repo_or_create() {
 }
 
 # ==============================================================================
+# 3.1) PARSER / VALIDACIÓN DE PERFIL (V1) - Modelo de Identidades
+# ==============================================================================
+# Soluciones agregadas:
+# - Parseo centralizado (en vez de split repetido).
+# - Backward-compat: rellena campos faltantes con defaults.
+# - Validación básica: evita perfiles rotos que luego rompen ssh-add/remote.
+#
+# Schema V1 esperado:
+# display_name;git_name;git_email;signing_key;push_target;ssh_host;ssh_key_path;gh_owner
+
+parse_profile_entry_v1() {
+  local entry="$1"
+
+  # Split a array
+  local IFS=';'
+  local -a parts=()
+  # shellcheck disable=SC2206
+  parts=($entry)
+
+  # Mínimo: display_name, git_name, git_email
+  if [ "${#parts[@]}" -lt 3 ]; then
+    return 1
+  fi
+
+  # Rellenar faltantes hasta 8 campos
+  while [ "${#parts[@]}" -lt 8 ]; do
+    parts+=("")
+  done
+
+  # Truncar extras
+  if [ "${#parts[@]}" -gt 8 ]; then
+    parts=("${parts[@]:0:8}")
+  fi
+
+  # Defaults críticos
+  if [ -z "${parts[4]}" ]; then parts[4]="origin"; fi
+  if [ -z "${parts[5]}" ]; then parts[5]="github.com"; fi
+
+  # Exportamos variables “de salida” (simple en bash)
+  PROFILE_DISPLAY_NAME="${parts[0]}"
+  PROFILE_GIT_NAME="${parts[1]}"
+  PROFILE_GIT_EMAIL="${parts[2]}"
+  PROFILE_SIGNING_KEY="${parts[3]}"
+  PROFILE_PUSH_TARGET="${parts[4]}"
+  PROFILE_SSH_HOST="${parts[5]}"
+  PROFILE_SSH_KEY_PATH="${parts[6]}"
+  PROFILE_GH_OWNER="${parts[7]}"
+
+  return 0
+}
+
+validate_profile_entry_v1() {
+  # Requiere que parse_profile_entry_v1 ya haya corrido.
+  # Validaciones suaves (no bloquean, pero avisan).
+  if [ -z "${PROFILE_GIT_EMAIL:-}" ]; then
+    echo "⚠️  Perfil inválido: email vacío." >&2
+    return 1
+  fi
+
+  # Si la signing key parece SSH (pub o ruta), intentamos que exista la privada si viene indicada.
+  if [[ "${PROFILE_SIGNING_KEY:-}" == *".pub" ]] || [[ "${PROFILE_SIGNING_KEY:-}" == "/"* ]]; then
+    if [ -n "${PROFILE_SSH_KEY_PATH:-}" ] && [ ! -f "${PROFILE_SSH_KEY_PATH:-}" ]; then
+      echo "⚠️  Perfil: ssh_key_path apunta a un archivo inexistente: ${PROFILE_SSH_KEY_PATH}" >&2
+      # No retornamos 1 fuerte: permitimos que siga y se autoinfiera después.
+    fi
+  fi
+
+  return 0
+}
+
+# ==============================================================================
 # 4. SELECTOR DE IDENTIDAD (MAIN FUNCTION)
 # ==============================================================================
 
@@ -192,19 +263,22 @@ setup_git_identity() {
       # --- FIX: Parseo robusto con Backward Compatibility (V1 Schema) ---
       # Schema: display_name;git_name;git_email;signing_key;push_target;ssh_host;ssh_key_path;gh_owner
       
-      # Convertimos a array para manejar campos faltantes
-      local -a p_fields
-      IFS=';' read -r -a p_fields <<< "$selected_profile_config"
-      
-      local display_name="${p_fields[0]}"
-      local git_name="${p_fields[1]}"
-      local git_email="${p_fields[2]}"
-      local gpg_key="${p_fields[3]}"
-      # Aplicamos defaults si faltan campos (backward-compat)
-      local target="${p_fields[4]:-origin}"
-      local ssh_host_alias="${p_fields[5]:-github.com}"
-      local ssh_key_path="${p_fields[6]:-}"
-      local gh_owner="${p_fields[7]:-}"
+      # FIX: parseo centralizado + defaults
+      if ! parse_profile_entry_v1 "$selected_profile_config"; then
+        echo "❌ Perfil inválido (no cumple schema mínimo)."
+        echo "   Entry: $selected_profile_config"
+        exit 1
+      fi
+      validate_profile_entry_v1 || true
+
+      local display_name="${PROFILE_DISPLAY_NAME}"
+      local git_name="${PROFILE_GIT_NAME}"
+      local git_email="${PROFILE_GIT_EMAIL}"
+      local gpg_key="${PROFILE_SIGNING_KEY}"
+      local target="${PROFILE_PUSH_TARGET}"
+      local ssh_host_alias="${PROFILE_SSH_HOST}"
+      local ssh_key_path="${PROFILE_SSH_KEY_PATH}"
+      local gh_owner="${PROFILE_GH_OWNER}"
 
       # Exportamos el target para que el script principal lo vea
       export push_target="$target"
