@@ -86,8 +86,8 @@ done
 # Asegurar que la carpeta del marker exista
 mkdir -p "$(dirname "$MARKER_FILE")"
 
-# Validar repo antes de seguir
-ensure_repo
+# Validar repo antes de seguir (con mensaje claro)
+ensure_repo_or_die
 
 # ==============================================================================
 # 3. MODO VERIFICACIÓN (FAST PATH)

@@ -5,7 +5,7 @@
 # admin:public_key / write:public_key -> Para subir llaves SSH
 # admin:ssh_signing_key -> Para subir llaves de firma
 # user -> Para leer perfil y emails
-DEVTOOLS_GH_SCOPES="admin:public_key write:public_key admin:ssh_signing_key user"
+: "${DEVTOOLS_GH_SCOPES:=admin:public_key write:public_key admin:ssh_signing_key user}"
 
 run_step_auth() {
     ui_step_header "1. Autenticación con GitHub"
@@ -29,12 +29,9 @@ run_step_auth() {
         if [[ "$action" == "Continuar"* ]]; then
             needs_login=false
         elif [[ "$action" == "Refrescar"* ]]; then
-            # --- FIX: INTENTO DE REFRESH REAL ---
-            ui_spinner "Refrescando credenciales y scopes..." \
-                gh auth refresh --hostname github.com -s "$DEVTOOLS_GH_SCOPES" 2>/dev/null
-            
-            # Chequeamos el código de salida del refresh
-            if [ $? -eq 0 ]; then
+            # --- FIX: INTENTO DE REFRESH REAL (SAFE CON set -e) ---
+            if ui_spinner "Refrescando credenciales y scopes..." \
+                gh auth refresh --hostname github.com -s "$DEVTOOLS_GH_SCOPES"; then
                 ui_success "Credenciales refrescadas correctamente."
                 needs_login=false
             else
