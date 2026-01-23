@@ -7,6 +7,20 @@ run_step_profile_registration() {
     local rc_file=".devtools/.git-acprc"
     local marker_file=".devtools/.setup_completed"
 
+    # --- FIX (Modelo de Identidades): Asegurar carpeta .devtools ---
+    mkdir -p "$(dirname "$rc_file")"
+    mkdir -p "$(dirname "$marker_file")"
+
+    # --- FIX (Modelo de Identidades): Sanitización de campos del perfil ---
+    # Evita que caracteres como ';' o saltos de línea rompan el schema del Profile Entry.
+    sanitize_profile_field() {
+        local v="$1"
+        v="${v//$'\n'/ }"
+        v="${v//$'\r'/ }"
+        v="${v//;/,}"
+        echo "$v"
+    }
+
     # ==========================================================================
     # 1. PREPARAR ARCHIVO DE CONFIGURACIÓN (.git-acprc)
     # ==========================================================================
@@ -21,6 +35,22 @@ REFS_LABEL="Conteo: commit"
 DAILY_GOAL=10
 PROFILES=()
 EOF
+    else
+        # --- FIX (Modelo de Identidades): Backward-compat / migración suave ---
+        # Si el archivo existe pero no tiene PROFILE_SCHEMA_VERSION, lo agregamos sin destruir contenido.
+        if ! grep -qE '^[[:space:]]*PROFILE_SCHEMA_VERSION=' "$rc_file"; then
+            local tmp_rc_schema="${rc_file}.schema.tmp"
+            cp "$rc_file" "$tmp_rc_schema"
+            {
+                echo "# Auto-agregado por setup-wizard ($(date +%F)): Schema Version"
+                echo "PROFILE_SCHEMA_VERSION=1"
+                echo ""
+                cat "$tmp_rc_schema"
+            } > "${tmp_rc_schema}.final"
+            mv "${tmp_rc_schema}.final" "$rc_file"
+            rm -f "$tmp_rc_schema" 2>/dev/null || true
+            ui_info "Se agregó PROFILE_SCHEMA_VERSION=1 a $rc_file (compatibilidad)."
+        fi
     fi
 
     # ==========================================================================
@@ -28,70 +58,6 @@ EOF
     # ==========================================================================
     local gh_login
     gh_login=$(gh api user -q ".login" 2>/dev/null || echo "unknown")
-    
-    # Contract V1: DisplayName;GitName;GitEmail;SigningKey;PushTarget;Host;SSHKey;GHOwner
-    local profile_entry="$GIT_NAME;$GIT_NAME;$GIT_EMAIL;$SIGNING_KEY;origin;github.com;$SSH_KEY_FINAL;$gh_login"
 
-    # --- FIX: DEDUPLICACIÓN ROBUSTA Y ESCRITURA ATÓMICA (P1) ---
-    # Usamos grep con -F (Fixed string) y buscamos el email CON los delimitadores (;)
-    if grep -Fq ";$GIT_EMAIL;" "$rc_file"; then
-        ui_success "Tu perfil ya existía en el menú de identidades."
-    else
-        # Escritura a archivo temporal para evitar corrupciones si se corta el proceso
-        local tmp_rc="${rc_file}.tmp"
-        cp "$rc_file" "$tmp_rc"
-        
-        echo "" >> "$tmp_rc"
-        echo "# Auto-agregado por setup-wizard ($(date +%F))" >> "$tmp_rc"
-        echo "PROFILES+=(\"$profile_entry\")" >> "$tmp_rc"
-        
-        # Reemplazo atómico
-        mv "$tmp_rc" "$rc_file"
-        ui_success "Perfil agregado exitosamente al menú."
-    fi
-
-    # ==========================================================================
-    # 3. FIX: CAMBIAR REMOTE A SSH (Para evitar prompts de password https)
-    # ==========================================================================
-    local current_url
-    current_url=$(git remote get-url origin 2>/dev/null || true)
-    
-    if [[ "$current_url" == https://* ]]; then
-        local new_url
-        new_url=$(echo "$current_url" | sed -E 's/https:\/\/github.com\//git@github.com:/')
-        git remote set-url origin "$new_url" 2>/dev/null || true
-        ui_info "Remote 'origin' actualizado de HTTPS a SSH."
-    fi
-
-    # ==========================================================================
-    # 4. VALIDACIÓN DE CONECTIVIDAD FINAL
-    # ==========================================================================
-    ui_spinner "Validando conexión SSH final..." sleep 1
-
-    if ssh -T git@github.com -o StrictHostKeyChecking=accept-new 2>&1 | grep -q "successfully authenticated"; then
-        ui_success "Conexión SSH verificada: Acceso Correcto."
-    else
-        ui_warn "No pudimos validar la conexión automáticamente (ssh -T git@github.com)."
-        ui_info "Es posible que necesites reiniciar tu terminal o agente SSH."
-    fi
-
-    # ==========================================================================
-    # 5. SETUP DE ENTORNO (.env)
-    # ==========================================================================
-    if [ ! -f ".env" ]; then
-        if [ -f ".env.example" ]; then
-            cp .env.example .env
-            ui_success "Archivo .env creado desde .env.example."
-        else
-            touch .env
-            ui_warn "Archivo .env creado (vacío)."
-        fi
-    fi
-
-    # ==========================================================================
-    # 6. MARCAR COMO COMPLETADO
-    # ==========================================================================
-    # Aseguramos que el directorio exista (por si se corre aislado)
-    mkdir -p "$(dirname "$marker_file")"
-    touch "$marker_file"
-}
+    # --- FIX (Modelo de Identidades): gh_owner semántica consistente ---
+    # Contract V1 usa el último campo como GHOwner

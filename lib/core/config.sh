@@ -89,3 +89,71 @@ if [ ${#PROFILES[@]} -eq 0 ]; then
     exit 1
   fi
 fi
+
+# ==============================================================================
+# 5. NORMALIZACIÓN / BACKWARD COMPAT DE PROFILES (Modelo de Identidades)
+# ==============================================================================
+# Objetivo:
+# - Soportar perfiles viejos (menos campos) rellenando defaults.
+# - Tolerar entradas inválidas sin romper todo el toolset.
+# - Garantizar que el runtime (ssh-ident.sh) reciba entradas consistentes.
+#
+# Nota: Bash no exporta arrays a subshells como variables de entorno “reales”,
+# pero esto igual sirve para estandarizar el array dentro del proceso actual.
+
+normalize_profiles_v1() {
+  # Si no hay perfiles, no hacemos nada.
+  if [ ${#PROFILES[@]} -eq 0 ]; then
+    return 0
+  fi
+
+  local -a normalized=()
+
+  local p
+  for p in "${PROFILES[@]}"; do
+    # Ignorar entradas vacías (por seguridad)
+    if [ -z "$p" ]; then
+      continue
+    fi
+
+    # Split por ';' según el contrato (V1).
+    local IFS=';'
+    local -a parts=()
+    # shellcheck disable=SC2206
+    parts=($p)
+    local n="${#parts[@]}"
+
+    # Reglas mínimas: al menos display_name, git_name, git_email
+    if [ "$n" -lt 3 ]; then
+      echo "⚠️  Perfil inválido (muy corto), se ignora: $p" >&2
+      continue
+    fi
+
+    # Si tiene menos campos que el schema V1, rellenamos con strings vacíos
+    # para evitar lecturas fuera de rango en otros scripts.
+    while [ "${#parts[@]}" -lt 8 ]; do
+      parts+=("")
+    done
+
+    # Si tiene más campos que V1, truncamos (no rompemos el menú)
+    if [ "$n" -gt 8 ]; then
+      echo "⚠️  Perfil con campos extra (se truncará a V1): ${parts[0]}" >&2
+      parts=("${parts[@]:0:8}")
+    fi
+
+    # Defaults razonables para evitar valores vacíos críticos:
+    # - push_target: origin
+    # - ssh_host: github.com
+    if [ -z "${parts[4]}" ]; then parts[4]="origin"; fi
+    if [ -z "${parts[5]}" ]; then parts[5]="github.com"; fi
+
+    # Recomponer entry normalizada
+    normalized+=("$(IFS=';'; echo "${parts[*]}")")
+  done
+
+  # Reemplazamos PROFILES por la versión normalizada
+  export PROFILES=("${normalized[@]}")
+}
+
+# Ejecutamos normalización al cargar config (para todo el runtime)
+normalize_profiles_v1
