@@ -8,6 +8,7 @@ run_step_git_config() {
     # 1. DETECCIÓN DE CONFLICTOS (Safety Checks)
     # ==========================================================================
     # Usamos los helpers de git-ops.sh para detectar si hay múltiples valores
+    # que puedan confundir a git.
     if has_multiple_values local user.name || has_multiple_values local user.email; then
         ui_error "Identidad LOCAL duplicada detectada. Por seguridad no modifico nada."
         ui_info "Solución: git config --local --unset-all user.name"
@@ -24,6 +25,7 @@ run_step_git_config() {
     # 2. LECTURA DE ESTADO ACTUAL
     # ==========================================================================
     # Prioridad: Local > Global
+    # Usamos el helper git_get para evitar errores si las llaves no existen
     local local_name="$(git_get local user.name)"
     local local_email="$(git_get local user.email)"
     local global_name="$(git_get global user.name)"
@@ -32,11 +34,12 @@ run_step_git_config() {
     # Variables que exportaremos para el Step 04
     export GIT_NAME=""
     export GIT_EMAIL=""
-    export SIGNING_KEY="${SSH_KEY_FINAL}.pub" # Viene del Step 02
+    # SSH_KEY_FINAL viene exportada del Step 02
+    export SIGNING_KEY="${SSH_KEY_FINAL}.pub" 
 
     local identity_configured=false
 
-    # Caso A: Existe identidad Local
+    # Caso A: Existe identidad Local (Prioridad Máxima)
     if any_set "$local_name" "$local_email"; then
         if [ -z "$local_name" ] || [ -z "$local_email" ]; then
             ui_error "Identidad LOCAL incompleta. Corrígela manualmente."
@@ -47,7 +50,7 @@ run_step_git_config() {
         ui_success "Identidad LOCAL ya configurada: $GIT_NAME <$GIT_EMAIL>"
         identity_configured=true
     
-    # Caso B: Existe identidad Global
+    # Caso B: Existe identidad Global (Fallback común)
     elif any_set "$global_name" "$global_email"; then
         if [ -z "$global_name" ] || [ -z "$global_email" ]; then
             ui_error "Identidad GLOBAL incompleta. Corrígela manualmente."
@@ -60,13 +63,13 @@ run_step_git_config() {
     fi
 
     # --- FIX (Modelo de Identidades): Preferir configuración LOCAL por repo (opcional) ---
-    # Esto ayuda cuando el usuario maneja múltiples perfiles/cuentas: el repo queda estable
-    # aunque el global cambie por otro proyecto o por la selección de perfiles en runtime.
-    # Política: si tomamos identidad desde GLOBAL y el repo no tiene identidad LOCAL, ofrecemos aplicarla.
+    # Esto ayuda cuando el usuario maneja múltiples perfiles/cuentas.
+    # Si tomamos identidad desde GLOBAL y el repo no tiene identidad LOCAL, ofrecemos aplicarla.
     if [ "$identity_configured" = true ]; then
         if [ -z "$local_name" ] && [ -z "$local_email" ] && [ -n "$global_name" ] && [ -n "$global_email" ]; then
             ui_info "Detectamos identidad GLOBAL pero este repo no tiene identidad LOCAL."
             ui_info "Recomendación (multi-perfil): guardar identity local en este repo."
+            
             if ask_yes_no "¿Quieres aplicar '$GIT_NAME <$GIT_EMAIL>' también a nivel LOCAL (solo este repo)?"; then
                 git config --local --replace-all user.name "$GIT_NAME"
                 git config --local --replace-all user.email "$GIT_EMAIL"
@@ -83,7 +86,7 @@ run_step_git_config() {
     if [ "$identity_configured" = false ]; then
         ui_info "Configurando identidad por primera vez..."
         
-        # Intentar adivinar datos desde GitHub API
+        # Intentar adivinar datos desde GitHub API para mejorar UX
         local gh_name
         gh_name=$(gh api user -q ".name" 2>/dev/null || gh api user -q ".login" 2>/dev/null || echo "")
         local gh_email
@@ -99,7 +102,7 @@ run_step_git_config() {
             exit 1
         fi
 
-        # Escribir en GLOBAL (Política: Devbox configura el user globalmente)
+        # Escribir en GLOBAL (Política: Devbox configura el user globalmente por defecto)
         git config --global --replace-all user.name "$GIT_NAME"
         git config --global --replace-all user.email "$GIT_EMAIL"
         ui_success "Identidad configurada en GLOBAL."
@@ -131,9 +134,9 @@ run_step_git_config() {
             echo "   Actual: $current_key"
             echo "   Nueva:  $SIGNING_KEY"
             
-            # FIX (Modelo de Identidades): confirm robusto con fallback (gum o ask_yes_no)
+            # FIX: confirm robusto con fallback
             local replace_ok=false
-            if have_gum_ui; then
+            if command -v gum >/dev/null 2>&1; then
                 if gum confirm "¿Deseas reemplazarla por la nueva?"; then
                     replace_ok=true
                 fi
@@ -162,7 +165,6 @@ run_step_git_config() {
             ui_success "Firma configurada en GLOBAL (Key: $SIGNING_KEY)."
 
             # --- FIX (Modelo de Identidades): recomendar firma LOCAL por repo ---
-            # Esto evita que un repo quede “amarrado” al signing global cuando se usan varios perfiles.
             ui_info "Sugerencia: para multi-perfil, es mejor fijar la firma también en LOCAL en este repo."
             if ask_yes_no "¿Quieres aplicar la firma SSH también a nivel LOCAL (solo este repo)?"; then
                 git config --local --replace-all gpg.format ssh

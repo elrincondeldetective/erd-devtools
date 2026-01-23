@@ -12,7 +12,6 @@ run_step_profile_registration() {
     mkdir -p "$(dirname "$marker_file")"
 
     # --- FIX (Modelo de Identidades): Sanitización de campos del perfil ---
-    # Evita que caracteres como ';' o saltos de línea rompan el schema del Profile Entry.
     sanitize_profile_field() {
         local v="$1"
         v="${v//$'\n'/ }"
@@ -26,7 +25,6 @@ run_step_profile_registration() {
     # ==========================================================================
     if [ ! -f "$rc_file" ]; then
         ui_info "Creando archivo de configuración inicial..."
-        # Incluimos la versión del esquema en el archivo generado
         cat <<EOF > "$rc_file"
 # Configuración generada por ERD Devtools Wizard
 PROFILE_SCHEMA_VERSION=1
@@ -36,8 +34,7 @@ DAILY_GOAL=10
 PROFILES=()
 EOF
     else
-        # --- FIX (Modelo de Identidades): Backward-compat / migración suave ---
-        # Si el archivo existe pero no tiene PROFILE_SCHEMA_VERSION, lo agregamos sin destruir contenido.
+        # Backward-compat: Agregar version si falta
         if ! grep -qE '^[[:space:]]*PROFILE_SCHEMA_VERSION=' "$rc_file"; then
             local tmp_rc_schema="${rc_file}.schema.tmp"
             cp "$rc_file" "$tmp_rc_schema"
@@ -49,113 +46,105 @@ EOF
             } > "${tmp_rc_schema}.final"
             mv "${tmp_rc_schema}.final" "$rc_file"
             rm -f "$tmp_rc_schema" 2>/dev/null || true
-            ui_info "Se agregó PROFILE_SCHEMA_VERSION=1 a $rc_file (compatibilidad)."
+            ui_info "Se agregó PROFILE_SCHEMA_VERSION=1 a $rc_file."
         fi
     fi
 
     # ==========================================================================
-    # 2. CONSTRUIR Y GUARDAR PERFIL
+    # 2. CONSTRUIR DATOS DEL PERFIL
     # ==========================================================================
     local gh_login
     gh_login=$(gh api user -q ".login" 2>/dev/null || echo "unknown")
+    local gh_owner_default="$gh_login"
+    
+    # --- FIX: Display Name Personalizado (UX) ---
+    local display_name_input
+    if command -v gum >/dev/null 2>&1; then
+        display_name_input=$(gum input --value "$GIT_NAME" --header "Nombre del Perfil (ej: Personal, Trabajo)")
+    else
+        display_name_input="$GIT_NAME"
+    fi
+    
+    # --- FIX: Definir Host SSH ---
+    # Por defecto github.com, pero si usáramos alias complejos, aquí se definiría.
+    local ssh_host_target="github.com"
 
-    # --- FIX (Modelo de Identidades): gh_owner semántica consistente ---
-    # Contract V1 usa el último campo como GHOwner (owner por defecto). Por defecto lo alineamos con el login.
-    local gh_owner_default
-    gh_owner_default="$gh_login"
-
-    # Contract V1: DisplayName;GitName;GitEmail;SigningKey;PushTarget;Host;SSHKey;GHOwner
-    # --- FIX (Modelo de Identidades): Sanitizar valores antes de escribir ---
-    local safe_git_name safe_git_email safe_signing_key safe_ssh_key_final safe_gh_owner
+    # Sanitizar valores
+    local safe_display_name safe_git_name safe_git_email safe_signing_key safe_ssh_key_final safe_gh_owner safe_ssh_host
+    safe_display_name="$(sanitize_profile_field "$display_name_input")"
     safe_git_name="$(sanitize_profile_field "$GIT_NAME")"
     safe_git_email="$(sanitize_profile_field "$GIT_EMAIL")"
     safe_signing_key="$(sanitize_profile_field "$SIGNING_KEY")"
     safe_ssh_key_final="$(sanitize_profile_field "$SSH_KEY_FINAL")"
     safe_gh_owner="$(sanitize_profile_field "$gh_owner_default")"
+    safe_ssh_host="$(sanitize_profile_field "$ssh_host_target")"
 
-    local profile_entry="$safe_git_name;$safe_git_name;$safe_git_email;$safe_signing_key;origin;github.com;$safe_ssh_key_final;$safe_gh_owner"
+    # Schema V1: DisplayName;GitName;GitEmail;SigningKey;PushTarget;Host;SSHKey;GHOwner
+    local profile_entry="$safe_display_name;$safe_git_name;$safe_git_email;$safe_signing_key;origin;$safe_ssh_host;$safe_ssh_key_final;$safe_gh_owner"
 
-    # --- FIX (Modelo de Identidades): Deduplicación por clave compuesta (multi-perfil) ---
-    # En lugar de solo email, usamos un patrón más específico:
-    # ;email;signing_key;push_target;host;
-    local dedupe_sig=";${safe_git_email};${safe_signing_key};origin;github.com;"
+    # ==========================================================================
+    # 3. GUARDAR PERFIL (DEDUPLICACIÓN)
+    # ==========================================================================
+    # Clave compuesta para detectar duplicados: ;email;signing_key;push_target;host;
+    local dedupe_sig=";${safe_git_email};${safe_signing_key};origin;${safe_ssh_host};"
     local email_sig=";${safe_git_email};"
 
-    # --- FIX: DEDUPLICACIÓN ROBUSTA Y ESCRITURA ATÓMICA (P1) ---
     if grep -Fq "$dedupe_sig" "$rc_file"; then
-        ui_success "Tu perfil ya existía en el menú de identidades (misma llave/host)."
+        ui_success "Tu perfil ya existía en el menú de identidades."
     elif grep -Fq "$email_sig" "$rc_file"; then
-        # Caso: mismo email pero otra llave/host/entry. Ofrecemos decisión.
-        ui_warn "Detectamos un perfil existente con el mismo email, pero con datos distintos."
-        ui_info "Esto puede ser normal si usas varias llaves o varias organizaciones."
+        ui_warn "Detectamos un perfil existente con el mismo email, pero datos distintos."
         if ask_yes_no "¿Quieres agregar este perfil como una entrada adicional?"; then
-            local tmp_rc="${rc_file}.tmp"
-            cp "$rc_file" "$tmp_rc"
-
-            echo "" >> "$tmp_rc"
-            echo "# Auto-agregado por setup-wizard ($(date +%F))" >> "$tmp_rc"
-            echo "PROFILES+=(\"$profile_entry\")" >> "$tmp_rc"
-
-            # Reemplazo atómico
-            mv "$tmp_rc" "$rc_file"
-            ui_success "Perfil agregado exitosamente al menú (multi-perfil)."
+            echo "" >> "$rc_file"
+            echo "PROFILES+=(\"$profile_entry\")" >> "$rc_file"
+            ui_success "Perfil agregado (multi-perfil)."
         else
-            ui_info "No se agregó un nuevo perfil (se mantuvo el existente)."
+            ui_info "No se agregó el nuevo perfil."
         fi
     else
-        # Escritura a archivo temporal para evitar corrupciones si se corta el proceso
-        local tmp_rc="${rc_file}.tmp"
-        cp "$rc_file" "$tmp_rc"
-
-        echo "" >> "$tmp_rc"
-        echo "# Auto-agregado por setup-wizard ($(date +%F))" >> "$tmp_rc"
-        echo "PROFILES+=(\"$profile_entry\")" >> "$tmp_rc"
-
-        # Reemplazo atómico
-        mv "$tmp_rc" "$rc_file"
-        ui_success "Perfil agregado exitosamente al menú."
+        # Escritura segura
+        echo "" >> "$rc_file"
+        echo "# Auto-agregado por setup-wizard ($(date +%F))" >> "$rc_file"
+        echo "PROFILES+=(\"$profile_entry\")" >> "$rc_file"
+        ui_success "Perfil agregado al menú."
     fi
 
     # ==========================================================================
-    # 3. FIX: CAMBIAR REMOTE A SSH (Para evitar prompts de password https)
+    # 4. FIX: CAMBIAR REMOTE A SSH
     # ==========================================================================
     local current_url
     current_url=$(git remote get-url origin 2>/dev/null || true)
 
-    # --- FIX (Modelo de Identidades): No modificar remotos agresivamente ---
-    # Solo convertimos si es GitHub HTTPS, y preferiblemente bajo confirmación.
     if [[ "$current_url" == https://github.com/* ]]; then
         local new_url
         new_url=$(echo "$current_url" | sed -E 's/https:\/\/github.com\//git@github.com:/')
 
-        # Si no hay TTY, no tocamos el remote automáticamente (seguridad)
         if ! is_tty; then
-            ui_warn "Entorno no interactivo: no se modificó el remote 'origin' (HTTPS->SSH)."
-            ui_info "Si lo necesitas, ejecuta manualmente: git remote set-url origin \"$new_url\""
+            ui_warn "Entorno no interactivo: no se modificó 'origin' a SSH."
         else
-            if ask_yes_no "¿Actualizar remote 'origin' de HTTPS a SSH para evitar prompts?"; then
+            if ask_yes_no "¿Actualizar remote 'origin' de HTTPS a SSH?"; then
                 git remote set-url origin "$new_url" 2>/dev/null || true
-                ui_info "Remote 'origin' actualizado de HTTPS a SSH."
+                ui_info "Remote actualizado a SSH."
             else
-                ui_info "Se mantuvo el remote actual (sin cambios)."
+                ui_info "Se mantuvo el remote HTTPS."
             fi
         fi
     fi
 
     # ==========================================================================
-    # 4. VALIDACIÓN DE CONECTIVIDAD FINAL
+    # 5. VALIDACIÓN DE CONECTIVIDAD FINAL
     # ==========================================================================
-    ui_spinner "Validando conexión SSH final..." sleep 1
+    # --- FIX: Usar variable de host en vez de hardcode ---
+    ui_spinner "Validando conexión SSH final ($safe_ssh_host)..." sleep 1
 
-    if ssh -T git@github.com -o StrictHostKeyChecking=accept-new 2>&1 | grep -q "successfully authenticated"; then
+    if ssh -T "git@$safe_ssh_host" -o StrictHostKeyChecking=accept-new 2>&1 | grep -qE "(successfully authenticated|Hi)"; then
         ui_success "Conexión SSH verificada: Acceso Correcto."
     else
-        ui_warn "No pudimos validar la conexión automáticamente (ssh -T git@github.com)."
-        ui_info "Es posible que necesites reiniciar tu terminal o agente SSH."
+        ui_warn "No pudimos validar la conexión automáticamente a $safe_ssh_host."
+        ui_info "Prueba manual: ssh -T git@$safe_ssh_host"
     fi
 
     # ==========================================================================
-    # 5. SETUP DE ENTORNO (.env)
+    # 6. SETUP DE ENTORNO (.env) & MARKER
     # ==========================================================================
     if [ ! -f ".env" ]; then
         if [ -f ".env.example" ]; then
@@ -167,10 +156,6 @@ EOF
         fi
     fi
 
-    # ==========================================================================
-    # 6. MARCAR COMO COMPLETADO
-    # ==========================================================================
-    # Aseguramos que el directorio exista (por si se corre aislado)
     mkdir -p "$(dirname "$marker_file")"
     touch "$marker_file"
 }

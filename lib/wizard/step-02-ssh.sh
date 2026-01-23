@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # /webapps/erd-ecosystem/.devtools/lib/wizard/step-02-ssh.sh
 
+# --- FIX: INTEGRACIÓN CON RUNTIME ---
+# Importamos ssh-ident.sh para usar la misma lógica de agente que el resto del toolset
+source "${LIB_BASE}/ssh-ident.sh"
+
 run_step_ssh() {
     ui_step_header "3. Configuración de Llaves de Seguridad"
 
     # Variable global que exportaremos para los siguientes pasos
     export SSH_KEY_FINAL=""
     
-    # FIX: Usamos mapfile para manejar arrays de archivos correctamente (P1)
-    # Esto previene errores si hay espacios en las rutas
+    # FIX: Usamos mapfile para manejar arrays de archivos correctamente
     local -a existing_keys_array
     mapfile -t existing_keys_array < <(find "$HOME/.ssh" -maxdepth 1 -name "id_*.pub" 2>/dev/null)
     
@@ -28,40 +31,39 @@ run_step_ssh() {
     if [[ "$ssh_choice" == "$choice_gen" ]]; then
         generate_new_ssh_key
     else
-        # Pasamos el array indirectamente o lo re-leemos en la función
         select_existing_ssh_key
     fi
 
-    # --- FIX: CARGA EN AGENTE SSH (P0) ---
-    # Es crítico cargar la llave en el agente ahora mismo, si no, 
-    # el paso de validación posterior (ssh -T) fallará aunque la llave exista.
-    ui_spinner "Cargando llave en el agente SSH..." sleep 1
+    # 3. Carga en Agente SSH (Unificado)
+    ui_spinner "Configurando Agente SSH..." sleep 1
     
-    # Iniciar agente si no existe
-    if [ -z "$SSH_AUTH_SOCK" ]; then
-        eval "$(ssh-agent -s)" >/dev/null
-    fi
+    # --- FIX: AGENTE UNIFICADO ---
+    # Usamos la función de ssh-ident.sh para garantizar que usamos el mismo agente
+    # que usará git-acp en el futuro.
+    load_or_start_agent
     
-    # Agregar la llave privada (quitamos .pub del path)
+    # Agregar la llave privada
     if [ -f "$SSH_KEY_FINAL" ]; then
-        # Borramos identidades viejas o rotas si es necesario, o solo agregamos
         chmod 600 "$SSH_KEY_FINAL"
 
-        # FIX: No fallar silenciosamente: si ssh-add falla, avisar por qué y cómo arreglarlo.
-        # Esto ayuda cuando la llave tiene passphrase o el agente está mal configurado.
-        if ssh-add "$SSH_KEY_FINAL" >/dev/null 2>&1; then
-            ui_success "Llave cargada en memoria (ssh-agent)."
+        # Intentamos agregarla. Si falla, manejamos el error explícitamente.
+        if ! ssh-add "$SSH_KEY_FINAL" 2>/dev/null; then
+            ui_warn "⚠️ ssh-add falló al cargar la llave (posiblemente requiere passphrase)."
+            ui_info "Intentando modo interactivo..."
+            
+            # Reintentar visiblemente para que pida pass
+            ssh-add "$SSH_KEY_FINAL" || {
+                ui_error "No se pudo cargar la llave en el agente."
+                ui_info "Solución: Cárgala manualmente con 'ssh-add $SSH_KEY_FINAL' y reintenta."
+            }
         else
-            ui_warn "⚠️ No se pudo cargar la llave en el ssh-agent (ssh-add falló)."
-            ui_info "Esto suele pasar si la llave tiene passphrase o el agente no está listo."
-            ui_info "Solución: ejecuta manualmente: ssh-add \"$SSH_KEY_FINAL\""
-            ui_info "Luego reintenta: ./bin/setup-wizard.sh --force"
+            ui_success "Llave cargada en memoria (ssh-agent)."
         fi
     else
         ui_warn "No se encontró la llave privada local ($SSH_KEY_FINAL). El agente no la cargó."
     fi
 
-    # 3. Subida a GitHub
+    # 4. Subida a GitHub
     sync_ssh_key_to_github
 }
 
@@ -93,7 +95,6 @@ generate_new_ssh_key() {
 }
 
 select_existing_ssh_key() {
-    # FIX: Re-leemos el array localmente para asegurar integridad con gum choose
     local -a keys
     mapfile -t keys < <(find "$HOME/.ssh" -maxdepth 1 -name "id_*.pub" 2>/dev/null)
     
@@ -111,13 +112,12 @@ sync_ssh_key_to_github() {
     local pub_key_content
     pub_key_content=$(cat "$SSH_KEY_FINAL.pub")
     local auth_uploaded=false
-    # Variable para trackear si la firma se subió (aunque no bloquea el flujo principal)
     local sign_uploaded=false
 
     ui_spinner "Intentando subir llaves automáticamente..." sleep 2
 
     # --------------------------------------------------------------------------
-    # FASE 1: Subida como Llave de AUTENTICACIÓN (Lectura/Escritura de repo)
+    # FASE 1: Llave de AUTENTICACIÓN (Crítica)
     # --------------------------------------------------------------------------
     if gh ssh-key add "$SSH_KEY_FINAL.pub" --title "$key_title (Auth)" --type authentication >/dev/null 2>&1; then
         auth_uploaded=true
@@ -136,34 +136,31 @@ sync_ssh_key_to_github() {
     fi
 
     # --------------------------------------------------------------------------
-    # FASE 2: Subida como Llave de FIRMA (Verified Commits) - FIX
+    # FASE 2: Llave de FIRMA (Opcional / Verified Commits)
     # --------------------------------------------------------------------------
-    # Intentamos registrar la misma llave explícitamente para signing.
     if gh ssh-key add "$SSH_KEY_FINAL.pub" --title "$key_title (Signing)" --type signing >/dev/null 2>&1; then
         sign_uploaded=true
-        ui_success "✅ Llave de Firma subida (Tus commits saldrán como 'Verified')."
+        ui_success "✅ Llave de Firma subida (Verified Commits)."
     else
-        # Verificación silenciosa para signing
         local key_body
         key_body=$(echo "$pub_key_content" | cut -d' ' -f2)
         
-        # Nota: gh ssh-key list por defecto muestra auth keys, usamos --type signing si la versión lo soporta
-        # o simplemente ignoramos el error si no es crítico.
+        # Check suave para no romper en versiones viejas de gh o planes sin soporte
         if gh ssh-key list --type signing 2>/dev/null | grep -q "$key_body"; then
                 ui_success "ℹ️ La llave ya estaba configurada para Firma."
                 sign_uploaded=true
         else
                 ui_warn "⚠️ No se pudo registrar como llave de Firma (Signing Key)."
-                ui_info "Podrás hacer commits, pero quizás no aparezcan como 'Verified'."
+                ui_info "Podrás hacer commits, pero no aparecerán como 'Verified'."
         fi
     fi
 
     # --------------------------------------------------------------------------
-    # FASE 3: Fallback Manual (Solo si falló Auth, que es lo crítico)
+    # FASE 3: Fallback Manual (Solo si falló Auth)
     # --------------------------------------------------------------------------
     if [ "$auth_uploaded" = false ]; then
-        ui_alert_box "⚠️ NO PUDIMOS SUBIR LA LLAVE DE AUTENTICACIÓN" \
-            "Esto es normal si faltan permisos de admin (write:public_key)." \
+        ui_alert_box "⚠️ FALLÓ SUBIDA AUTOMÁTICA" \
+            "Faltan permisos de escritura (write:public_key)." \
             "Vamos a hacerlo manualmente."
 
         echo ""
@@ -176,14 +173,11 @@ sync_ssh_key_to_github() {
         fi
         
         echo ""
-        ui_info "2. Abre este link:"
-        ui_link "   👉 https://github.com/settings/ssh/new"
+        ui_info "2. Abre: https://github.com/settings/ssh/new"
         echo ""
         ui_info "3. Pega la llave, ponle título y guarda."
         
-        if gum confirm "Presiona Enter cuando la hayas guardado en GitHub"; then
-            ui_success "Confirmado por el usuario."
-        else
+        if ! gum confirm "Presiona Enter cuando termines"; then
             ui_error "Cancelado."
             exit 1
         fi

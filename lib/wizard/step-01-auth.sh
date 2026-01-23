@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # /webapps/erd-ecosystem/.devtools/lib/wizard/step-01-auth.sh
 
+# Variable de Scopes (Mínimo Privilegio + Firma SSH)
+# admin:public_key / write:public_key -> Para subir llaves SSH
+# admin:ssh_signing_key -> Para subir llaves de firma
+# user -> Para leer perfil y emails
+DEVTOOLS_GH_SCOPES="admin:public_key write:public_key admin:ssh_signing_key user"
+
 run_step_auth() {
     ui_step_header "1. Autenticación con GitHub"
 
@@ -17,11 +23,26 @@ run_step_auth() {
         local action
         action=$(gum choose \
             "Continuar como $current_user" \
-            "Cerrar sesión y cambiar de cuenta" \
-            "Refrescar credenciales (Reparar permisos)")
+            "Refrescar credenciales (Reparar permisos)" \
+            "Cerrar sesión y cambiar de cuenta")
 
         if [[ "$action" == "Continuar"* ]]; then
             needs_login=false
+        elif [[ "$action" == "Refrescar"* ]]; then
+            # --- FIX: INTENTO DE REFRESH REAL ---
+            ui_spinner "Refrescando credenciales y scopes..." \
+                gh auth refresh --hostname github.com -s "$DEVTOOLS_GH_SCOPES" 2>/dev/null
+            
+            # Chequeamos el código de salida del refresh
+            if [ $? -eq 0 ]; then
+                ui_success "Credenciales refrescadas correctamente."
+                needs_login=false
+            else
+                ui_warn "No se pudo refrescar la sesión (posiblemente falta soporte en tu versión de gh)."
+                ui_info "Procediendo a re-autenticación completa..."
+                gh auth logout --hostname github.com >/dev/null 2>&1 || true
+                needs_login=true
+            fi
         else
             # Logout forzado para limpiar estado (FIX: Host explícito)
             gh auth logout --hostname github.com >/dev/null 2>&1 || true
@@ -35,8 +56,8 @@ run_step_auth() {
         ui_info "Solicitaremos permisos de escritura para subir tu llave SSH automáticamente."
         
         if gum confirm "Presiona Enter para abrir el navegador y autorizar"; then
-            # Login con scopes específicos para llaves SSH y firma
-            if gh auth login --hostname github.com --git-protocol ssh --web --skip-ssh-key -s "admin:public_key write:public_key admin:ssh_signing_key user"; then
+            # Login con scopes configurables
+            if gh auth login --hostname github.com --git-protocol ssh --web --skip-ssh-key -s "$DEVTOOLS_GH_SCOPES"; then
                 local new_user
                 new_user=$(gh api user -q ".login")
                 ui_success "Login exitoso. Conectado como: $new_user"
