@@ -3,6 +3,10 @@
 
 # --- FIX: INTEGRACIÓN CON RUNTIME ---
 # Importamos ssh-ident.sh para usar la misma lógica de agente que el resto del toolset
+#
+# FIX: Si este step se ejecuta aislado (sin setup-wizard.sh), LIB_BASE puede no existir.
+: "${LIB_BASE:=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# shellcheck disable=SC1090
 source "${LIB_BASE}/ssh-ident.sh"
 
 run_step_ssh() {

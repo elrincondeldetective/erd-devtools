@@ -20,6 +20,20 @@ run_step_profile_registration() {
         echo "$v"
     }
 
+    # --- FIX: ESCRITURA ATÓMICA (Evita corrupción si se corta el proceso) ---
+    append_profile_entry_atomically() {
+        local entry="$1"
+        local tmp_rc="${rc_file}.tmp"
+
+        # Si por algún motivo no existe, lo creamos vacío para poder cp/mv
+        [[ -f "$rc_file" ]] || : > "$rc_file"
+
+        cp "$rc_file" "$tmp_rc"
+        printf "\n# Auto-agregado por setup-wizard (%s)\n" "$(date +%F)" >> "$tmp_rc"
+        printf "PROFILES+=(\"%s\")\n" "$entry" >> "$tmp_rc"
+        mv "$tmp_rc" "$rc_file"
+    }
+
     # ==========================================================================
     # 1. PREPARAR ARCHIVO DE CONFIGURACIÓN (.git-acprc)
     # ==========================================================================
@@ -94,17 +108,13 @@ EOF
     elif grep -Fq "$email_sig" "$rc_file"; then
         ui_warn "Detectamos un perfil existente con el mismo email, pero datos distintos."
         if ask_yes_no "¿Quieres agregar este perfil como una entrada adicional?"; then
-            echo "" >> "$rc_file"
-            echo "PROFILES+=(\"$profile_entry\")" >> "$rc_file"
+            append_profile_entry_atomically "$profile_entry"
             ui_success "Perfil agregado (multi-perfil)."
         else
             ui_info "No se agregó el nuevo perfil."
         fi
     else
-        # Escritura segura
-        echo "" >> "$rc_file"
-        echo "# Auto-agregado por setup-wizard ($(date +%F))" >> "$rc_file"
-        echo "PROFILES+=(\"$profile_entry\")" >> "$rc_file"
+        append_profile_entry_atomically "$profile_entry"
         ui_success "Perfil agregado al menú."
     fi
 

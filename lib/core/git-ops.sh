@@ -20,7 +20,7 @@ has_multiple_values() {
     local scope="$1"
     local key="$2"
     local count
-    count="$(git config --"$scope" --get-all "$key" 2>/dev/null | wc -l)"
+    count="$(git config --"$scope" --get-all "$key" 2>/dev/null | awk 'END{print NR}')"
     if [ "$count" -gt 1 ]; then return 0; else return 1; fi
 }
 
