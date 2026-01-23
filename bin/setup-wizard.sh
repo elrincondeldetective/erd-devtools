@@ -93,8 +93,12 @@ if [ "$VERIFY_ONLY" = true ]; then
     ui_info "El setup ya se realizó anteriormente."
     
     # Check rápido de usuario
-    CURRENT_NAME="$(git_get global user.name)"
-    if [ -z "$CURRENT_NAME" ]; then CURRENT_NAME="$(git_get local user.name)"; fi
+    # FIX: git_get vive en core/git-ops.sh en tu base original; si el archivo actual no lo trae,
+    # caía en "git_get: orden no encontrada". Hacemos fallback robusto a `git config`.
+    CURRENT_NAME="$(git_get global user.name 2>/dev/null || true)"
+    if [ -z "$CURRENT_NAME" ]; then CURRENT_NAME="$(git_get local user.name 2>/dev/null || true)"; fi
+    if [ -z "$CURRENT_NAME" ]; then CURRENT_NAME="$(git config --global --get user.name 2>/dev/null || true)"; fi
+    if [ -z "$CURRENT_NAME" ]; then CURRENT_NAME="$(git config --local --get user.name 2>/dev/null || true)"; fi
     
     # --- FIX: VERIFICAR TAMBIÉN GH AUTH (P2) ---
     ui_spinner "Verificando sesión GH CLI..." sleep 1
@@ -133,7 +137,6 @@ fi
 # ==============================================================================
 # 4. EJECUCIÓN DEL WIZARD (FULL PATH)
 # ==============================================================================
-
 show_detective_banner
 
 # PASO 1: Auth & 2FA
