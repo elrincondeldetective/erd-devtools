@@ -43,6 +43,12 @@ export PROFILES=("${PROFILES[@]:-}")
 export GH_AUTO_CREATE="${GH_AUTO_CREATE:-false}"
 export GH_DEFAULT_VISIBILITY="${GH_DEFAULT_VISIBILITY:-private}"
 
+# --- Contrato de Perfil (Profile Schema) ---
+export PROFILE_SCHEMA_VERSION=1
+# Schema V1 Order:
+# 0:display_name ; 1:git_name ; 2:git_email ; 3:signing_key ; 
+# 4:push_target  ; 5:ssh_host ; 6:ssh_key_path ; 7:gh_owner
+
 # --- Políticas de Git (Feature Branch Workflow) ---
 export ENFORCE_FEATURE_BRANCH="${ENFORCE_FEATURE_BRANCH:-true}"   # exige feature/*
 export AUTO_RENAME_TO_FEATURE="${AUTO_RENAME_TO_FEATURE:-true}"   # renombra si no cumple
@@ -61,7 +67,6 @@ export SIMPLE_MODE=false
 
 # 4.1) Asegura main como rama por defecto para futuros repos
 # (Lo ponemos antes de las validaciones para asegurar que se ejecute siempre)
-# FIX: No permitir que un fallo de git config tumbe scripts con set -e (ej. setup-wizard)
 git config --global init.defaultBranch main >/dev/null 2>&1 || true
 
 # Si no hay perfiles definidos en la config, activamos modo simple

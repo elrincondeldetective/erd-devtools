@@ -12,8 +12,10 @@ run_step_profile_registration() {
     # ==========================================================================
     if [ ! -f "$rc_file" ]; then
         ui_info "Creando archivo de configuración inicial..."
+        # Incluimos la versión del esquema en el archivo generado
         cat <<EOF > "$rc_file"
 # Configuración generada por ERD Devtools Wizard
+PROFILE_SCHEMA_VERSION=1
 DAY_START="00:00"
 REFS_LABEL="Conteo: commit"
 DAILY_GOAL=10
@@ -27,13 +29,11 @@ EOF
     local gh_login
     gh_login=$(gh api user -q ".login" 2>/dev/null || echo "unknown")
     
-    # Formato esperado por git-acp.sh:
-    # DisplayName;GitName;GitEmail;SigningKey(Pub);Remote;Host;SSHKey(Priv);GHLogin
+    # Contract V1: DisplayName;GitName;GitEmail;SigningKey;PushTarget;Host;SSHKey;GHOwner
     local profile_entry="$GIT_NAME;$GIT_NAME;$GIT_EMAIL;$SIGNING_KEY;origin;github.com;$SSH_KEY_FINAL;$gh_login"
 
     # --- FIX: DEDUPLICACIÓN ROBUSTA Y ESCRITURA ATÓMICA (P1) ---
     # Usamos grep con -F (Fixed string) y buscamos el email CON los delimitadores (;)
-    # Esto evita falsos positivos (ej: "ana@x.com" dentro de "mariana@x.com")
     if grep -Fq ";$GIT_EMAIL;" "$rc_file"; then
         ui_success "Tu perfil ya existía en el menú de identidades."
     else
