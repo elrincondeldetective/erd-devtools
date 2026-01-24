@@ -98,10 +98,25 @@ run_post_push_flow() {
     local head="$1"
     local base="$2"
     
+    # [FIX 1/3] Fallback de UI para robustez (si styles.sh no existe o no se cargó)
+    if ! declare -F ui_step_header >/dev/null 2>&1; then
+        ui_step_header() { echo -e "\n>>> $1"; }
+        ui_success() { echo "✅ $1"; }
+        ui_error() { echo "❌ $1"; }
+        ui_warn() { echo "⚠️  $1"; }
+        ui_info() { echo "ℹ️  $1"; }
+        have_gum_ui() { command -v gum >/dev/null; }
+        ask_yes_no() {
+            local prompt="$1"
+            read -r -p "$prompt [y/N] " response
+            [[ "$response" =~ ^[yY] ]]
+        }
+    fi
+
     # Dependencias de utils.sh
     if ! command -v is_tty >/dev/null; then 
-        echo "❌ Error: utils.sh no cargado (falta is_tty)"
-        return 1
+        # Fallback simple para is_tty si utils.sh falló
+        is_tty() { [ -t 1 ]; }
     fi
 
     is_tty || return 0
@@ -114,6 +129,9 @@ run_post_push_flow() {
     ui_step_header "🕵️  RINCÓN DEL DETECTIVE: Calidad de Código"
     echo "   Rama actual: $head"
     echo
+
+    # Variable para controlar si el usuario pasó los tests
+    local gate_passed=0
 
     # --- Definición de Opciones del Menú ---
     local OPT_GATE="✅ Gate Estándar (Nativo + Act)"
@@ -164,6 +182,7 @@ run_post_push_flow() {
                 echo
                 if run_cmd "$ACT_CI_CMD"; then
                     ui_success "✅ Gate completado."
+                    gate_passed=1
                     # Sugerir PR automáticamente si pasa el gate
                     echo
                     if ask_yes_no "¿Quieres crear el PR ahora?"; then
@@ -199,9 +218,21 @@ run_post_push_flow() {
         
         "$OPT_K8S_FULL")
             echo "▶️  Ejecutando Pipeline Full (Bloqueará la terminal)..."
-            run_cmd "$K8S_FULL_CMD"
             
-            # === FIX: MENSAJE DE RECONEXIÓN AMIGABLE ===
+            # [FIX 2/3] Manejo de Ctrl+C (130) como salida normal
+            run_cmd "$K8S_FULL_CMD"
+            local rc=$?
+            
+            if [[ "$rc" != "0" && "$rc" != "130" && "$rc" != "143" ]]; then
+                ui_error "❌ Pipeline full falló con código $rc"
+                # Podrías hacer return aquí, pero dejamos caer al menú de reconexión por si acaso
+            else
+                 # Si fue Ctrl+C (130) o éxito (0), lo tratamos amigablemente
+                 echo
+                 ui_info "🛑 Pipeline finalizado/interrumpido (rc=$rc)."
+            fi
+            
+            # === MENSAJE DE RECONEXIÓN AMIGABLE ===
             echo
             ui_warn "🔌 Has desconectado los túneles del Pipeline."
             echo
@@ -220,6 +251,25 @@ run_post_push_flow() {
             ;;
 
         "$OPT_PR")
+            # [FIX 3/3] Enforzar Gate antes de PR
+            if [[ "${REQUIRE_GATE_BEFORE_PR:-true}" == "true" && "${gate_passed:-0}" != "1" && "${DEVTOOLS_ALLOW_PR_WITHOUT_GATE:-0}" != "1" ]]; then
+                ui_warn "🔒 Para crear PR debes pasar el Gate (Nativo + Act)."
+                echo "   Esto asegura que no subamos código roto."
+                echo 
+                if ask_yes_no "¿Ejecutar Gate ahora?"; then
+                    if run_cmd "$NATIVE_CI_CMD" && run_cmd "$ACT_CI_CMD"; then
+                        gate_passed=1
+                        ui_success "Gate superado. Procediendo al PR..."
+                    else
+                        ui_error "No se pasó el Gate. PR abortado."
+                        return 1
+                    fi
+                else
+                    ui_info "PR cancelado. (Usa DEVTOOLS_ALLOW_PR_WITHOUT_GATE=1 si es urgente)."
+                    return 1
+                fi
+            fi
+
             do_create_pr_flow "$head" "$base"
             ;;
     esac
