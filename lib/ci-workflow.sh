@@ -10,39 +10,75 @@ detect_ci_tools() {
 
     : "${POST_PUSH_FLOW:=true}"
 
-    # --- Detección de CI Nativo (Prioridad: Contrato 'task ci') ---
+    # --- Nivel 1: CI Nativo (Prioridad: Contrato 'task ci') ---
     if [[ -z "${NATIVE_CI_CMD:-}" ]]; then
         # 1. Si existe 'task ci' (estricto) en el Taskfile raíz, ÚSALO.
         if [[ -f "${root}/Taskfile.yaml" ]] && grep -qE '^[[:space:]]*ci:[[:space:]]*$' "${root}/Taskfile.yaml"; then
-        export NATIVE_CI_CMD="task ci"
+            export NATIVE_CI_CMD="task ci"
         # 2. Fallback antiguo (estructura monorepo PMBOK)
         elif [[ -f "${root}/apps/pmbok/Taskfile.yaml" ]]; then
-        export NATIVE_CI_CMD="task -d apps/pmbok test"
+            export NATIVE_CI_CMD="task -d apps/pmbok test"
         else
-        # Default genérico
-        export NATIVE_CI_CMD="task test"
+            # Default genérico
+            export NATIVE_CI_CMD="task test"
         fi
     fi
 
-    # --- Detección de Pipeline Local (Nuevo) ---
-    if [[ -z "${LOCAL_PIPELINE_CMD:-}" ]]; then
-        # Busca 'pipeline:local:' de forma estricta al inicio de línea
-        if [[ -f "${root}/Taskfile.yaml" ]] && grep -qE '^[[:space:]]*pipeline:local:[[:space:]]*$' "${root}/Taskfile.yaml"; then
-        export LOCAL_PIPELINE_CMD="task pipeline:local"
-        fi
-    fi
-
-    # --- Detección de Act (GitHub Actions Local) ---
+    # --- Nivel 2: Act (GitHub Actions Local) ---
     if [[ -z "${ACT_CI_CMD:-}" ]]; then
         # 1. Si existe 'task ci:act' (estricto)
         if [[ -f "${root}/Taskfile.yaml" ]] && grep -qE '^[[:space:]]*ci:act:[[:space:]]*$' "${root}/Taskfile.yaml"; then
-        export ACT_CI_CMD="task ci:act"
+            export ACT_CI_CMD="task ci:act"
         # 2. Fallback antiguo
         elif [[ -f "${root}/.github/workflows/test/Taskfile.yaml" ]]; then
-        export ACT_CI_CMD="task -t .github/workflows/test/Taskfile.yaml trigger"
+            export ACT_CI_CMD="task -t .github/workflows/test/Taskfile.yaml trigger"
+        # 3. Fallback directo a 'act' si existe la carpeta workflows
+        elif command -v act >/dev/null && [ -d "${root}/.github/workflows" ]; then
+            export ACT_CI_CMD="act"
         else
-        # Default
-        export ACT_CI_CMD="act"
+            export ACT_CI_CMD=""
+        fi
+    fi
+
+    # --- Nivel 3: Compose (Runtime Dev / Smoke) ---
+    if [[ -z "${COMPOSE_CI_CMD:-}" ]]; then
+        # Buscamos 'task local:check' (Smoke test de tu entorno compose)
+        # O 'task local:up' como fallback
+        if [[ -f "${root}/Taskfile.yaml" ]]; then
+             if grep -q "local:check" "${root}/Taskfile.yaml" || grep -q "local:check" "${root}/devops/tasks/local.yaml" 2>/dev/null; then
+                 export COMPOSE_CI_CMD="task local:check"
+             elif grep -q "local:up" "${root}/Taskfile.yaml"; then
+                 export COMPOSE_CI_CMD="task local:up"
+             fi
+        fi
+    fi
+
+    # --- Nivel 4: K8s Headless (Build -> Deploy -> Smoke) ---
+    # Detectamos si tienes los bloques para hacer un deploy "pro" sin interactividad
+    if [[ -z "${K8S_HEADLESS_CMD:-}" ]]; then
+        if [[ -f "${root}/Taskfile.yaml" ]]; then
+            # Verificamos que existan los 3 componentes clave en el Taskfile raíz
+            has_build=$(grep -q "build:local" "${root}/Taskfile.yaml" && echo "yes")
+            has_deploy=$(grep -q "deploy:local" "${root}/Taskfile.yaml" && echo "yes")
+            has_smoke=$(grep -q "smoke:local" "${root}/Taskfile.yaml" && echo "yes")
+            
+            if [[ "$has_build" == "yes" && "$has_deploy" == "yes" && "$has_smoke" == "yes" ]]; then
+                # Ejecución en cadena
+                export K8S_HEADLESS_CMD="task build:local && task deploy:local && task smoke:local"
+            fi
+        fi
+    fi
+
+    # --- Nivel 5: K8s Full (Interactivo/Pipeline completo) ---
+    if [[ -z "${K8S_FULL_CMD:-}" ]]; then
+        if [[ -f "${root}/Taskfile.yaml" ]]; then
+            # Prioridad: Contrato 'pipeline:local'
+            if grep -qE '^[[:space:]]*pipeline:local:[[:space:]]*$' "${root}/Taskfile.yaml"; then
+                export K8S_FULL_CMD="task pipeline:local"
+            # Fallback a detección legacy
+            elif [[ -n "${LOCAL_PIPELINE_CMD:-}" ]]; then
+                 export K8S_FULL_CMD="$LOCAL_PIPELINE_CMD"
+            fi
         fi
     fi
 }
@@ -52,7 +88,7 @@ detect_ci_tools() {
 detect_ci_tools
 
 # ==============================================================================
-# 2. FLUJO POST-PUSH (Interactive CI & PR)
+# 2. FLUJO POST-PUSH (Menu Interactivo por Niveles)
 # ==============================================================================
 
 run_post_push_flow() {
@@ -68,74 +104,134 @@ run_post_push_flow() {
     is_tty || return 0
     [[ "$POST_PUSH_FLOW" == "true" ]] || return 0
     
-    # Solo activar flujo si estamos en una rama feature
-    if [[ "$head" != feature/* ]]; then return 0; fi
+    # Solo activar flujo si estamos en una rama feature (o fix/hotfix)
+    if [[ "$head" != feature/* && "$head" != hotfix/* && "$head" != fix/* ]]; then return 0; fi
 
-    local native_ok="skip"
+    echo
+    ui_step_header "🕵️  RINCÓN DEL DETECTIVE: Calidad de Código"
+    echo "   Rama actual: $head"
+    echo
+
+    # --- Definición de Opciones del Menú ---
+    local OPT_GATE="✅ Gate Estándar (Nativo + Act)"
+    local OPT_NATIVE="🔍 Solo Nativo (Rápido)"
+    local OPT_ACT="🎬 Solo Act (GH Actions)"
+    local OPT_COMPOSE="🐳 Compose Check (Integration)"
+    local OPT_K8S="☸️  K8s Pro (Build -> Deploy -> Smoke)"
+    local OPT_K8S_FULL="🚀 Pipeline Full (Interactivo)"
+    local OPT_PR="📨 Finalizar y Crear PR"
+    local OPT_SKIP="🚪 Salir (Seguir trabajando)"
+
+    # --- Construcción dinámica del menú según herramientas detectadas ---
+    local choices=()
     
-    # --------------------------------------------------------------------------
-    # PASO 1: CI NATIVO (Unit Tests / Fast Checks)
-    # --------------------------------------------------------------------------
-    echo
-    if ask_yes_no "¿Quieres correr en local el CI ‘nativo’ del commit que acabas de subir a GitHub?"; then
-        if [[ -z "$NATIVE_CI_CMD" ]]; then
-            echo "❌ No tengo comando para CI Nativo. Configura NATIVE_CI_CMD."
-            return 1
-        fi
-        
-        # Nota: Ya no exportamos DB_HOST/PORT aquí porque 'task ci' maneja su propio entorno.
-        
-        if run_cmd "$NATIVE_CI_CMD"; then
-            native_ok="ok"
-        else
-            echo "❌ CI nativo falló. Se aborta el flujo (no se ofrece PR)."
-            return 1
-        fi
+    # Gate estándar siempre disponible si hay comandos básicos
+    if [[ -n "$NATIVE_CI_CMD" && -n "$ACT_CI_CMD" ]]; then
+        choices+=("$OPT_GATE")
     fi
 
-    # --------------------------------------------------------------------------
-    # PASO 2: CI CON ACT (Simulación GitHub Actions)
-    # --------------------------------------------------------------------------
-    # Solo si el nativo pasó o se saltó
-    if [[ "$native_ok" == "ok" || "$native_ok" == "skip" ]]; then
-        echo
-        if ask_yes_no "¿Quieres correr el CI con act (GitHub Actions en local)?"; then
-                if [[ -z "$ACT_CI_CMD" ]]; then
-                    echo "❌ No encontré configuración para 'act'."
-                    return 1
-                fi
-                if ! run_cmd "$ACT_CI_CMD"; then
-                    echo "❌ CI con act falló. Se aborta el flujo (no se ofrece PR)."
-                    return 1
-                fi
-        fi
-    fi
+    [[ -n "$NATIVE_CI_CMD" ]] && choices+=("$OPT_NATIVE")
+    [[ -n "$ACT_CI_CMD" ]]    && choices+=("$OPT_ACT")
+    [[ -n "$COMPOSE_CI_CMD" ]] && choices+=("$OPT_COMPOSE")
+    [[ -n "$K8S_HEADLESS_CMD" ]] && choices+=("$OPT_K8S")
+    [[ -n "$K8S_FULL_CMD" ]] && choices+=("$OPT_K8S_FULL")
+    
+    choices+=("$OPT_PR")
+    choices+=("$OPT_SKIP")
 
-    # --------------------------------------------------------------------------
-    # PASO 3: CREACIÓN DE PR
-    # --------------------------------------------------------------------------
-    echo
-    if ask_yes_no "¿Quieres crear un PR para finalizar el trabajo y enviarlo a revisión?"; then
-        # Buscamos git-pr.sh relativo a esta librería (lib/../bin/git-pr.sh)
-        local lib_dir
-        lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-        local pr_script="${lib_dir}/../bin/git-pr.sh"
-
-        if [[ -f "$pr_script" ]]; then
-            if "$pr_script"; then
-                echo "Gracias por el trabajo, en breve se revisa."
-                return 0
-            fi
-        elif command -v git-pr >/dev/null; then
-            # Fallback si está en el PATH
-            if git-pr; then return 0; fi
-        else
-            echo "❌ No encuentro el script git-pr.sh en $pr_script ni en el PATH."
-        fi
-        
-        echo "⚠️ Hubo un problema creando el PR."
-        return 1
+    # --- Selección ---
+    local selected
+    if have_gum_ui; then
+        selected=$(gum choose --header "Selecciona un nivel de validación:" "${choices[@]}")
     else
-        echo "Listo, sigue trabajando en más funcionalidades."
+        echo "Selecciona opción:"
+        select opt in "${choices[@]}"; do selected="$opt"; break; done
     fi
+
+    if [[ -z "$selected" || "$selected" == "$OPT_SKIP" ]]; then
+        echo "👌 Omitido."
+        return 0
+    fi
+
+    # --- Ejecución ---
+    case "$selected" in
+        "$OPT_GATE")
+            echo "▶️  Ejecutando Gate Estándar..."
+            if run_cmd "$NATIVE_CI_CMD"; then
+                echo
+                if run_cmd "$ACT_CI_CMD"; then
+                    ui_success "✅ Gate completado."
+                    # Sugerir PR automáticamente si pasa el gate
+                    echo
+                    if ask_yes_no "¿Quieres crear el PR ahora?"; then
+                        do_create_pr_flow "$head" "$base"
+                    fi
+                else
+                    ui_error "❌ Falló CI Act."
+                    return 1
+                fi
+            else
+                ui_error "❌ Falló CI Nativo."
+                return 1
+            fi
+            ;;
+            
+        "$OPT_NATIVE")
+            run_cmd "$NATIVE_CI_CMD"
+            ;;
+
+        "$OPT_ACT")
+            run_cmd "$ACT_CI_CMD"
+            ;;
+
+        "$OPT_COMPOSE")
+            echo "▶️  Verificando entorno Compose..."
+            run_cmd "$COMPOSE_CI_CMD"
+            ;;
+
+        "$OPT_K8S")
+            echo "▶️  Ejecutando Pipeline K8s Local (Headless)..."
+            run_cmd "$K8S_HEADLESS_CMD"
+            ;;
+        
+        "$OPT_K8S_FULL")
+            echo "▶️  Ejecutando Pipeline Full (Bloqueará la terminal)..."
+            run_cmd "$K8S_FULL_CMD"
+            ;;
+
+        "$OPT_PR")
+            do_create_pr_flow "$head" "$base"
+            ;;
+    esac
+}
+
+# ==============================================================================
+# 3. HELPER: CREACIÓN DE PR
+# ==============================================================================
+
+# Extraído a función auxiliar para poder llamarlo desde el menú o tras el éxito del Gate
+do_create_pr_flow() {
+    local head="$1"
+    local base="$2"
+    
+    # Buscamos git-pr.sh relativo a esta librería (lib/../bin/git-pr.sh)
+    local lib_dir
+    lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local pr_script="${lib_dir}/../bin/git-pr.sh"
+
+    if [[ -f "$pr_script" ]]; then
+        if "$pr_script"; then
+            echo "Gracias por el trabajo, en breve se revisa."
+            return 0
+        fi
+    elif command -v git-pr >/dev/null; then
+        # Fallback si está en el PATH
+        if git-pr; then return 0; fi
+    else
+        echo "❌ No encuentro el script git-pr.sh en $pr_script ni en el PATH."
+        return 1
+    fi
+    
+    echo "⚠️ Hubo un problema creando el PR."
+    return 1
 }
