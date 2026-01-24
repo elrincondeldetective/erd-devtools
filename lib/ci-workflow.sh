@@ -8,13 +8,17 @@
 # Helper: Verifica si una tarea existe realmente en el Taskfile (incluso importada)
 task_exists() {
     local task_name="$1"
-    # Ejecuta 'task --list' y busca la tarea exacta. 
-    # Redirigimos stderr para silenciar errores si task no está instalado.
-    if command -v task >/dev/null; then
-        task --list 2>/dev/null | grep -qE "(^|[[:space:]])${task_name}([[:space:]]|$)"
-    else
-        return 1
-    fi
+    command -v task >/dev/null || return 1
+
+    task --list 2>/dev/null | awk '
+        /^task:/ {next}          # ignora encabezados tipo "task: Available tasks..."
+        NF==0 {next}             # ignora líneas vacías
+        {
+            name=$1
+          gsub(/^[*+-]+/, "", name)  # quita bullets: *, -, +
+            print name
+        }
+    ' | grep -Fxq "$task_name"
 }
 
 detect_ci_tools() {
@@ -44,9 +48,9 @@ detect_ci_tools() {
     if [[ -z "${COMPOSE_CI_CMD:-}" ]]; then
         # Gracias a task_exists, esto detecta 'local:check' aunque venga de un include
         if task_exists "local:check"; then
-             export COMPOSE_CI_CMD="task local:check"
+                export COMPOSE_CI_CMD="task local:check"
         elif task_exists "local:up"; then
-             export COMPOSE_CI_CMD="task local:up"
+                export COMPOSE_CI_CMD="task local:up"
         fi
     fi
 
@@ -211,9 +215,9 @@ run_post_push_flow() {
             if [[ "$rc" != "0" && "$rc" != "130" && "$rc" != "143" ]]; then
                 ui_error "❌ Pipeline full falló con código $rc"
             else
-                 # Si fue Ctrl+C (130) o éxito (0), lo tratamos amigablemente
-                 echo
-                 ui_info "🛑 Pipeline finalizado/interrumpido (rc=$rc)."
+                    # Si fue Ctrl+C (130) o éxito (0), lo tratamos amigablemente
+                    echo
+                    ui_info "🛑 Pipeline finalizado/interrumpido (rc=$rc)."
             fi
             
             # === MENSAJE DE RECONEXIÓN AMIGABLE ===
