@@ -6,49 +6,47 @@
 # ==============================================================================
 
 detect_ci_tools() {
-    local root
     root="$(git rev-parse --show-toplevel 2>/dev/null || echo ".")"
 
-    # --- Post-push flow default ---
     : "${POST_PUSH_FLOW:=true}"
 
     # --- Detección de CI Nativo (Prioridad: Contrato 'task ci') ---
     if [[ -z "${NATIVE_CI_CMD:-}" ]]; then
         # 1. Si existe 'task ci' (estricto) en el Taskfile raíz, ÚSALO.
-        if [ -f "${root}/Taskfile.yaml" ] && grep -qE '^[[:space:]]*ci:[[:space:]]*$' "${root}/Taskfile.yaml"; then
-            export NATIVE_CI_CMD="task ci"
-        
+        if [[ -f "${root}/Taskfile.yaml" ]] && grep -qE '^[[:space:]]*ci:[[:space:]]*$' "${root}/Taskfile.yaml"; then
+        export NATIVE_CI_CMD="task ci"
         # 2. Fallback antiguo (estructura monorepo PMBOK)
         elif [[ -f "${root}/apps/pmbok/Taskfile.yaml" ]]; then
-            export NATIVE_CI_CMD="task -d apps/pmbok test"
+        export NATIVE_CI_CMD="task -d apps/pmbok test"
         else
-            # Default genérico
-            export NATIVE_CI_CMD="task test"
+        # Default genérico
+        export NATIVE_CI_CMD="task test"
         fi
     fi
 
     # --- Detección de Pipeline Local (Nuevo) ---
     if [[ -z "${LOCAL_PIPELINE_CMD:-}" ]]; then
         # Busca 'pipeline:local:' de forma estricta al inicio de línea
-        if [ -f "${root}/Taskfile.yaml" ] && grep -qE '^[[:space:]]*pipeline:local:[[:space:]]*$' "${root}/Taskfile.yaml"; then
-            export LOCAL_PIPELINE_CMD="task pipeline:local"
+        if [[ -f "${root}/Taskfile.yaml" ]] && grep -qE '^[[:space:]]*pipeline:local:[[:space:]]*$' "${root}/Taskfile.yaml"; then
+        export LOCAL_PIPELINE_CMD="task pipeline:local"
         fi
     fi
 
     # --- Detección de Act (GitHub Actions Local) ---
     if [[ -z "${ACT_CI_CMD:-}" ]]; then
         # 1. Si existe 'task ci:act' (estricto)
-        if [ -f "${root}/Taskfile.yaml" ] && grep -qE '^[[:space:]]*ci:act:[[:space:]]*$' "${root}/Taskfile.yaml"; then
-                export ACT_CI_CMD="task ci:act"
+        if [[ -f "${root}/Taskfile.yaml" ]] && grep -qE '^[[:space:]]*ci:act:[[:space:]]*$' "${root}/Taskfile.yaml"; then
+        export ACT_CI_CMD="task ci:act"
         # 2. Fallback antiguo
         elif [[ -f "${root}/.github/workflows/test/Taskfile.yaml" ]]; then
-            export ACT_CI_CMD="task -t .github/workflows/test/Taskfile.yaml trigger"
+        export ACT_CI_CMD="task -t .github/workflows/test/Taskfile.yaml trigger"
         else
-            # Default
-            export ACT_CI_CMD="act"
+        # Default
+        export ACT_CI_CMD="act"
         fi
     fi
 }
+
 
 # Ejecutamos la detección al cargar la librería para tener las vars listas
 detect_ci_tools

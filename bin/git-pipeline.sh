@@ -6,7 +6,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="${SCRIPT_DIR}/../lib"
 source "${LIB_DIR}/core/utils.sh"
-# No cargamos config.sh entero para evitar logs innecesarios, 
+# No cargamos config.sh entero para evitar logs innecesarios,
 # pero cargamos el workflow que tiene la lógica de detección.
 source "${LIB_DIR}/ci-workflow.sh"
 
@@ -16,10 +16,10 @@ echo "🚀 Iniciando Pipeline Local (via Git)..."
 detect_ci_tools
 
 if [[ -n "${LOCAL_PIPELINE_CMD:-}" ]]; then
-    echo "▶️  Ejecutando: $LOCAL_PIPELINE_CMD"
-    $LOCAL_PIPELINE_CMD
+  echo "▶️  Ejecutando: $LOCAL_PIPELINE_CMD"
+  $LOCAL_PIPELINE_CMD
 else
-    log_error "No se detectó un contrato de pipeline local (task pipeline:local)."
-    echo "   Asegúrate de tener un Taskfile.yaml con la tarea 'pipeline:local'."
-    exit 1
+  log_error "No se detectó un contrato de pipeline local (task pipeline:local)."
+  echo "   Asegúrate de tener un Taskfile.yaml con la tarea 'pipeline:local'."
+  exit 1
 fi
