@@ -166,6 +166,30 @@ render_env_status_panel() {
         fi
     fi
 
+    # Sugerencias rápidas de logs cuando Compose está activo (Traefik/runtime)
+    if detect_compose_active; then
+        if task_exists "local:logs:traefik"; then
+            runtime_suggestions+=("📄 Logs Traefik:       task local:logs:traefik")
+        fi
+        if task_exists "local:logs"; then
+            runtime_suggestions+=("📄 Logs Compose:       task local:logs")
+        fi
+        if task_exists "local:logs:backend"; then
+            runtime_suggestions+=("📄 Logs Backend:       task local:logs:backend")
+        fi
+        if task_exists "local:logs:frontend"; then
+            runtime_suggestions+=("📄 Logs Frontend:      task local:logs:frontend")
+        fi
+        if task_exists "local:logs:db"; then
+            runtime_suggestions+=("📄 Logs DB:            task local:logs:db")
+        fi
+
+        # Fallback manual (por si no existe local:logs:traefik todavía)
+        if ! task_exists "local:logs:traefik" && command -v docker >/dev/null 2>&1; then
+            runtime_suggestions+=("📄 Logs Traefik:       docker compose -f devops/local/compose.yml logs -f --tail=200 traefik")
+        fi
+    fi
+
     # Sugerencia de observabilidad (k9s) para ver logs / pods
     if task_exists "ui:local"; then
         runtime_suggestions+=("👀 Ver logs en K9s:   task ui:local")
