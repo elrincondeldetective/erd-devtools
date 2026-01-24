@@ -14,8 +14,14 @@ task_exists() {
         /^task:/ {next}          # ignora encabezados tipo "task: Available tasks..."
         NF==0 {next}             # ignora líneas vacías
         {
-            name=$1
-            gsub(/^[*+-]+/, "", name)  # quita bullets: *, -, +
+            # Formatos comunes:
+            # 1) "* ci:      desc"      -> $1="*"  $2="ci:"
+            # 2) "ci:        desc"      -> $1="ci:"
+            # 3) "- ci:      desc"      -> $1="-"  $2="ci:"
+            # 4) "ci         desc"      -> $1="ci"
+            if ($1 ~ /^[*+-]$/) { name=$2 } else { name=$1 }
+            gsub(/^[*+-]+/, "", name)   # quita bullets pegados: *, -, +
+            gsub(/:$/, "", name)        # quita ":" final si existe
             print name
         }
     ' | grep -Fxq "$task_name"
@@ -160,6 +166,13 @@ render_env_status_panel() {
         fi
     fi
 
+    # Sugerencia de observabilidad (k9s) para ver logs / pods
+    if task_exists "ui:local"; then
+        runtime_suggestions+=("👀 Ver logs en K9s:   task ui:local")
+    elif command -v k9s >/dev/null 2>&1; then
+        runtime_suggestions+=("👀 Ver logs en K9s:   k9s")
+    fi
+
     # Sugerencias de validación (no-runtime, pero útiles para “probar build/calidad”)
     [[ -n "${NATIVE_CI_CMD:-}" ]] && validation_suggestions+=("🔍 CI nativo:         ${NATIVE_CI_CMD}")
     [[ -n "${ACT_CI_CMD:-}" ]]    && validation_suggestions+=("🎬 CI con Act:        ${ACT_CI_CMD}")
@@ -285,6 +298,9 @@ run_post_push_flow() {
     local OPT_COMPOSE="🐳 Compose Check (Integration)"
     local OPT_K8S="☸️  K8s Pro (Build -> Deploy -> Smoke)"
     local OPT_K8S_FULL="🚀 Pipeline Full (Interactivo)"
+    local OPT_START_MINIKUBE="🟢 Activar Minikube (cluster:up)"
+    local OPT_K9S="👀 Abrir K9s (ui:local)"
+    local OPT_HELP="📘 ¿Qué hace cada opción?"
     local OPT_PR="📨 Finalizar y Crear PR"
     local OPT_SKIP="🚪 Salir (Seguir trabajando)"
 
@@ -301,7 +317,16 @@ run_post_push_flow() {
     [[ -n "${COMPOSE_CI_CMD:-}" ]] && choices+=("$OPT_COMPOSE")
     [[ -n "${K8S_HEADLESS_CMD:-}" ]] && choices+=("$OPT_K8S")
     [[ -n "${K8S_FULL_CMD:-}" ]] && choices+=("$OPT_K8S_FULL")
-    
+
+    # Acciones directas para devs (botones)
+    if ! detect_minikube_active && task_exists "cluster:up"; then
+        choices+=("$OPT_START_MINIKUBE")
+    fi
+    if task_exists "ui:local" || command -v k9s >/dev/null 2>&1; then
+        choices+=("$OPT_K9S")
+    fi
+
+    choices+=("$OPT_HELP")
     choices+=("$OPT_PR")
     choices+=("$OPT_SKIP")
 
@@ -392,6 +417,43 @@ run_post_push_flow() {
                 ui_warn "🔌 Túneles cerrados nuevamente."
             done
             ui_info "👌 Entendido. Túneles cerrados definitivamente."
+            ;;
+
+        "$OPT_START_MINIKUBE")
+            run_cmd "task cluster:up"
+            ;;
+
+        "$OPT_K9S")
+            if task_exists "ui:local"; then
+                run_cmd "task ui:local"
+            else
+                run_cmd "k9s"
+            fi
+            ;;
+
+        "$OPT_HELP")
+            if have_gum_ui; then
+                gum style --border rounded --padding "1 2" \
+                    "📘 Ayuda rápida" \
+                    "" \
+                    "✅ Gate Estándar: corre CI nativo + CI con Act (recomendado antes de PR)" \
+                    "🔍 Solo Nativo: corre tests rápidos sin simular GitHub Actions" \
+                    "🎬 Solo Act: corre el workflow real de GitHub Actions en local" \
+                    "🐳 Compose Check: valida que Compose/Traefik responde (runtime dev)" \
+                    "☸️  K8s Pro: build+deploy+smoke en Minikube (sin túneles)" \
+                    "🚀 Pipeline Full: despliega y abre túneles (Ctrl+C para salir)" \
+                    "" \
+                    "Tip: Usa 👀 K9s para ver pods/logs fácilmente."
+            else
+                echo "📘 Ayuda rápida:"
+                echo "  - ✅ Gate Estándar: CI nativo + Act (recomendado antes de PR)"
+                echo "  - 🔍 Solo Nativo: tests rápidos sin simular GH Actions"
+                echo "  - 🎬 Solo Act: workflow real GH Actions en local"
+                echo "  - 🐳 Compose Check: valida runtime Compose/Traefik"
+                echo "  - ☸️  K8s Pro: build+deploy+smoke en Minikube (headless)"
+                echo "  - 🚀 Pipeline Full: despliega y abre túneles (Ctrl+C para salir)"
+                echo "  - Tip: usa K9s para logs/pods."
+            fi
             ;;
 
         "$OPT_PR")
