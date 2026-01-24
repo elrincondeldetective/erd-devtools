@@ -37,8 +37,6 @@ detect_ci_tools() {
     if [[ -z "${ACT_CI_CMD:-}" ]]; then
         if task_exists "ci:act"; then
             export ACT_CI_CMD="task ci:act"
-        elif [[ -d "${root}/.github/workflows" ]] && command -v act >/dev/null; then
-            export ACT_CI_CMD="act"
         fi
     fi
 
@@ -107,6 +105,10 @@ run_post_push_flow() {
     [[ "$POST_PUSH_FLOW" == "true" ]] || return 0
     
     if [[ "$head" != feature/* && "$head" != hotfix/* && "$head" != fix/* ]]; then return 0; fi
+
+    # --- FIX: Re-detectar SIEMPRE (evita variables cacheadas / estado viejo) ---
+    unset NATIVE_CI_CMD ACT_CI_CMD COMPOSE_CI_CMD K8S_HEADLESS_CMD K8S_FULL_CMD
+    detect_ci_tools
 
     echo
     ui_step_header "🕵️  RINCÓN DEL DETECTIVE: Calidad de Código"
