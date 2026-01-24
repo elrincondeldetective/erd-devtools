@@ -123,6 +123,32 @@ ui_alert_box() {
 }
 
 # ==============================================================================
+# 1.1. NUEVO: CARDS / PANELES (DevX: estado de entorno + recomendaciones)
+# ==============================================================================
+# Uso:
+#   ui_card "Título" "Línea 1" "Línea 2" ...
+# Nota: No depende de utils.sh; usa have_gum_ui.
+ui_card() {
+    local title="$1"
+    shift
+
+    if have_gum_ui; then
+        gum style \
+            --border rounded --border-foreground "$COLOR_PRIMARY" \
+            --padding "1 2" \
+            "$title" \
+            "$@"
+    else
+        echo ""
+        echo -e "${ANSI_MAGENTA}${ANSI_BOLD}${title}${ANSI_RESET}"
+        for line in "$@"; do
+            echo -e "${ANSI_BLUE}${line}${ANSI_RESET}"
+        done
+        echo ""
+    fi
+}
+
+# ==============================================================================
 # 2. MENSAJES DE LOGGING (Reemplazan a log_success, log_warn, etc.)
 # ==============================================================================
 
