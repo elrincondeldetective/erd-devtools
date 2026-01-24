@@ -15,7 +15,7 @@ task_exists() {
         NF==0 {next}             # ignora líneas vacías
         {
             name=$1
-          gsub(/^[*+-]+/, "", name)  # quita bullets: *, -, +
+            gsub(/^[*+-]+/, "", name)  # quita bullets: *, -, +
             print name
         }
     ' | grep -Fxq "$task_name"
@@ -41,6 +41,9 @@ detect_ci_tools() {
     if [[ -z "${ACT_CI_CMD:-}" ]]; then
         if task_exists "ci:act"; then
             export ACT_CI_CMD="task ci:act"
+        # FIX: fallback seguro (NO usar `act` pelado). Si existe el wrapper Taskfile, úsalo.
+        elif [[ -f "${root}/.github/workflows/test/Taskfile.yaml" ]]; then
+            export ACT_CI_CMD="task -t .github/workflows/test/Taskfile.yaml trigger"
         fi
     fi
 
@@ -75,6 +78,156 @@ detect_ci_tools() {
 
 # Ejecutamos la detección al cargar la librería para tener las vars listas
 detect_ci_tools
+
+# ==============================================================================
+# 1.1. DETECCIÓN DE ENTORNO ACTIVO (DevX: Runtime + Alternativas)
+# ==============================================================================
+
+# Detecta si Docker Compose (Traefik) está activo (stack runtime)
+detect_compose_active() {
+    command -v docker >/dev/null || return 1
+    # Indicador principal del stack: traefik (gateway único)
+    docker ps --format '{{.Names}}' 2>/dev/null | grep -Fxq "pmbok-traefik"
+}
+
+# Detecta si Minikube/K8s local está activo (runtime prod-like)
+detect_minikube_active() {
+    # Contexto actual
+    if command -v kubectl >/dev/null; then
+        local ctx
+        ctx="$(kubectl config current-context 2>/dev/null || echo "")"
+        if [[ "$ctx" == "minikube" ]]; then
+            # Si minikube está instalado, verificamos que esté corriendo
+            if command -v minikube >/dev/null; then
+                minikube status 2>/dev/null | grep -q "Running"
+                return $?
+            fi
+            # Si no está minikube, pero el contexto es minikube, asumimos activo.
+            return 0
+        fi
+    fi
+
+    # Fallback: minikube status (si kubectl no está o el contexto no está configurado)
+    if command -v minikube >/dev/null; then
+        minikube status 2>/dev/null | grep -q "Running"
+        return $?
+    fi
+
+    return 1
+}
+
+# Detecta si estamos dentro de Devbox (toolchain / shell)
+detect_devbox_active() {
+    # Devbox suele exportar DEVBOX_ENV_NAME, pero no es garantía universal.
+    [[ -n "${DEVBOX_ENV_NAME:-}" ]] && return 0
+    [[ -n "${DEVBOX_SHELL_ENABLED:-}" ]] && return 0
+    [[ -n "${IN_DEVBOX_SHELL:-}" ]] && return 0
+    return 1
+}
+
+# Render “bonito” del estado de entorno (activo + alternativas)
+render_env_status_panel() {
+    local -a active_envs=()
+    local -a runtime_suggestions=()
+    local -a validation_suggestions=()
+
+    # Activos
+    if detect_devbox_active; then
+        active_envs+=("🧰 Devbox (toolchain)")
+    fi
+    if detect_compose_active; then
+        active_envs+=("🐳 Docker Compose (Traefik)")
+    fi
+    if detect_minikube_active; then
+        active_envs+=("☸️  Minikube GitOps")
+    fi
+
+    # Sugerencias de activación (runtime)
+    if ! detect_compose_active; then
+        if task_exists "local:up"; then
+            runtime_suggestions+=("🐳 Activar Compose:   task local:up")
+        elif task_exists "local:check"; then
+            runtime_suggestions+=("🐳 Compose (check):   task local:check")
+        fi
+    fi
+
+    if ! detect_minikube_active; then
+        # Preferimos el alias “cluster:up” porque es el contrato del root Taskfile
+        if task_exists "cluster:up"; then
+            runtime_suggestions+=("☸️  Activar Minikube:  task cluster:up")
+        elif task_exists "local:cluster:up"; then
+            runtime_suggestions+=("☸️  Activar Minikube:  task local:cluster:up")
+        fi
+    fi
+
+    # Sugerencias de validación (no-runtime, pero útiles para “probar build/calidad”)
+    [[ -n "${NATIVE_CI_CMD:-}" ]] && validation_suggestions+=("🔍 CI nativo:         ${NATIVE_CI_CMD}")
+    [[ -n "${ACT_CI_CMD:-}" ]]    && validation_suggestions+=("🎬 CI con Act:        ${ACT_CI_CMD}")
+    [[ -n "${K8S_HEADLESS_CMD:-}" ]] && validation_suggestions+=("🤖 K8s headless:      ${K8S_HEADLESS_CMD}")
+    [[ -n "${K8S_FULL_CMD:-}" ]]     && validation_suggestions+=("🚀 K8s full:          ${K8S_FULL_CMD}")
+
+    # Construir strings
+    local active_txt
+    if [[ "${#active_envs[@]}" -gt 0 ]]; then
+        active_txt="$(printf "%s\n" "${active_envs[@]}")"
+    else
+        active_txt="(Ninguno)"
+    fi
+
+    local runtime_txt
+    if [[ "${#runtime_suggestions[@]}" -gt 0 ]]; then
+        runtime_txt="$(printf "%s\n" "${runtime_suggestions[@]}")"
+    else
+        runtime_txt="(No hay sugerencias de runtime detectables)"
+    fi
+
+    local validation_txt
+    if [[ "${#validation_suggestions[@]}" -gt 0 ]]; then
+        validation_txt="$(printf "%s\n" "${validation_suggestions[@]}")"
+    else
+        validation_txt="(No se detectaron comandos de validación)"
+    fi
+
+    # Render UI (gum si está disponible, fallback texto)
+    if have_gum_ui; then
+        echo
+        gum style \
+            --border rounded --padding "1 2" --margin "0 0" \
+            "🧭 Entornos de trabajo" \
+            "" \
+            "Activo(s):" \
+            "$active_txt" \
+            "" \
+            "Puedes activar:" \
+            "$runtime_txt" \
+            "" \
+            "Validaciones disponibles:" \
+            "$validation_txt"
+        echo
+    else
+        echo
+        echo "════════════════════════════════════════════════════"
+        echo "🧭 Entornos de trabajo"
+        echo "════════════════════════════════════════════════════"
+        echo "Activo(s):"
+        echo "$active_txt" | sed 's/^/  - /'
+        echo
+        # Si no hay runtime activo, mostramos mensaje claro
+        if ! detect_compose_active && ! detect_minikube_active; then
+            echo "⚠️  No tienes un entorno de runtime activo para probar build/smoke."
+            echo "   Activa uno para continuar:"
+            echo "$runtime_txt" | sed 's/^/  • /'
+        else
+            echo "Puedes activar:"
+            echo "$runtime_txt" | sed 's/^/  • /'
+        fi
+        echo
+        echo "Validaciones disponibles:"
+        echo "$validation_txt" | sed 's/^/  • /'
+        echo "════════════════════════════════════════════════════"
+        echo
+    fi
+}
 
 # ==============================================================================
 # 2. FLUJO POST-PUSH (Menu Interactivo por Niveles)
@@ -113,6 +266,9 @@ run_post_push_flow() {
     # --- FIX: Re-detectar SIEMPRE (evita variables cacheadas / estado viejo) ---
     unset NATIVE_CI_CMD ACT_CI_CMD COMPOSE_CI_CMD K8S_HEADLESS_CMD K8S_FULL_CMD
     detect_ci_tools
+
+    # --- DevX: Mostrar entorno activo + alternativas (runtime + validaciones) ---
+    render_env_status_panel
 
     echo
     ui_step_header "🕵️  RINCÓN DEL DETECTIVE: Calidad de Código"
