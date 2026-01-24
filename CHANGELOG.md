@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.0](https://github.com/elrincondeldetective/erd-devtools/compare/erd-devtools-v1.0.0...erd-devtools-v1.1.0) (2026-01-24)
+
+
+### Features
+
+* **ci:** mejora detección de CI y flujo post-push ([773afa3](https://github.com/elrincondeldetective/erd-devtools/commit/773afa3c0405d6b32e70d24aa20e3bc4cfe25bf8))
+
+
+### Bug Fixes
+
+* **acp:** cargar `ui/styles.sh` antes de `git-flow.sh` en `bin/git-acp.sh` ([edb2db3](https://github.com/elrincondeldetective/erd-devtools/commit/edb2db37bfc976041b0e32a77236345acf8d4775))
+* **ci:** evitar fallos por variables no definidas y robustecer detección en `lib/ci-workflow.sh` ([975bbbf](https://github.com/elrincondeldetective/erd-devtools/commit/975bbbf2cbcd5303b3a8996a9fcd3d6495de1083))
+
 ## [1.0.0](https://github.com/elrincondeldetective/erd-devtools/compare/erd-devtools-v0.1.0...erd-devtools-v1.0.0) (2026-01-24)
 
 
