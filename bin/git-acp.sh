@@ -13,9 +13,10 @@ LIB_DIR="${SCRIPT_DIR}/../lib"
 # Orden de carga importante
 source "${LIB_DIR}/core/utils.sh"       # Helpers UI, Logs, TTY
 source "${LIB_DIR}/core/config.sh"      # Configuración y Defaults
-source "${LIB_DIR}/git-flow.sh"    # Políticas de ramas
-source "${LIB_DIR}/ssh-ident.sh"   # Identidad SSH/GPG
-source "${LIB_DIR}/ci-workflow.sh" # Flujo Post-Push (CI/PR)
+source "${LIB_DIR}/ui/styles.sh"        # <--- FIX: CARGAMOS ESTILOS (ui_step_header, gum)
+source "${LIB_DIR}/git-flow.sh"         # Políticas de ramas
+source "${LIB_DIR}/ssh-ident.sh"        # Identidad SSH/GPG
+source "${LIB_DIR}/ci-workflow.sh"      # Flujo Post-Push (CI/PR)
 
 echo "🟢 [ERD-ECOSYSTEM] Ejecutando git-acp integrado..."
 
