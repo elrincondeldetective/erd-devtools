@@ -10,13 +10,16 @@ detect_ci_tools() {
     root="$(git rev-parse --show-toplevel 2>/dev/null || echo ".")"
 
     # --- Post-push flow default ---
-    # Si no viene de config.sh, por defecto es true
     : "${POST_PUSH_FLOW:=true}"
 
-    # --- Detección de CI Nativo (Taskfile) ---
+    # --- Detección de CI Nativo (Prioridad: Contrato 'task ci') ---
     if [[ -z "${NATIVE_CI_CMD:-}" ]]; then
-        if [[ -f "${root}/apps/pmbok/Taskfile.yaml" ]]; then
-            # CI Nativo específico para estructura monorepo PMBOK
+        # 1. Si existe 'task ci' (estricto) en el Taskfile raíz, ÚSALO.
+        if [ -f "${root}/Taskfile.yaml" ] && grep -qE '^[[:space:]]*ci:[[:space:]]*$' "${root}/Taskfile.yaml"; then
+            export NATIVE_CI_CMD="task ci"
+        
+        # 2. Fallback antiguo (estructura monorepo PMBOK)
+        elif [[ -f "${root}/apps/pmbok/Taskfile.yaml" ]]; then
             export NATIVE_CI_CMD="task -d apps/pmbok test"
         else
             # Default genérico
@@ -24,11 +27,24 @@ detect_ci_tools() {
         fi
     fi
 
+    # --- Detección de Pipeline Local (Nuevo) ---
+    if [[ -z "${LOCAL_PIPELINE_CMD:-}" ]]; then
+        # Busca 'pipeline:local:' de forma estricta al inicio de línea
+        if [ -f "${root}/Taskfile.yaml" ] && grep -qE '^[[:space:]]*pipeline:local:[[:space:]]*$' "${root}/Taskfile.yaml"; then
+            export LOCAL_PIPELINE_CMD="task pipeline:local"
+        fi
+    fi
+
     # --- Detección de Act (GitHub Actions Local) ---
     if [[ -z "${ACT_CI_CMD:-}" ]]; then
-        if [[ -f "${root}/.github/workflows/test/Taskfile.yaml" ]]; then
+        # 1. Si existe 'task ci:act' (estricto)
+        if [ -f "${root}/Taskfile.yaml" ] && grep -qE '^[[:space:]]*ci:act:[[:space:]]*$' "${root}/Taskfile.yaml"; then
+                export ACT_CI_CMD="task ci:act"
+        # 2. Fallback antiguo
+        elif [[ -f "${root}/.github/workflows/test/Taskfile.yaml" ]]; then
             export ACT_CI_CMD="task -t .github/workflows/test/Taskfile.yaml trigger"
         else
+            # Default
             export ACT_CI_CMD="act"
         fi
     fi
@@ -65,23 +81,17 @@ run_post_push_flow() {
     echo
     if ask_yes_no "¿Quieres correr en local el CI ‘nativo’ del commit que acabas de subir a GitHub?"; then
         if [[ -z "$NATIVE_CI_CMD" ]]; then
-           echo "❌ No tengo comando para CI Nativo. Configura NATIVE_CI_CMD."
-           return 1
+            echo "❌ No tengo comando para CI Nativo. Configura NATIVE_CI_CMD."
+            return 1
         fi
         
-        # Exponemos variables para que el test nativo encuentre la DB de K8s local (si existe)
-        # NodePort 30432 es el definido en tu service.yaml local
-        export DB_HOST="127.0.0.1"
-        export DB_PORT="30432" 
-        export DB_NAME="pmbok_db"
-        export DB_USER="pmbok_user"
-        export DB_PASSWORD="secretpassword"
+        # Nota: Ya no exportamos DB_HOST/PORT aquí porque 'task ci' maneja su propio entorno.
         
         if run_cmd "$NATIVE_CI_CMD"; then
-           native_ok="ok"
+            native_ok="ok"
         else
-           echo "❌ CI nativo falló. Se aborta el flujo (no se ofrece PR)."
-           return 1
+            echo "❌ CI nativo falló. Se aborta el flujo (no se ofrece PR)."
+            return 1
         fi
     fi
 
@@ -92,14 +102,14 @@ run_post_push_flow() {
     if [[ "$native_ok" == "ok" || "$native_ok" == "skip" ]]; then
         echo
         if ask_yes_no "¿Quieres correr el CI con act (GitHub Actions en local)?"; then
-             if [[ -z "$ACT_CI_CMD" ]]; then
-                echo "❌ No encontré configuración para 'act'."
-                return 1
-             fi
-             if ! run_cmd "$ACT_CI_CMD"; then
-                echo "❌ CI con act falló. Se aborta el flujo (no se ofrece PR)."
-                return 1
-             fi
+                if [[ -z "$ACT_CI_CMD" ]]; then
+                    echo "❌ No encontré configuración para 'act'."
+                    return 1
+                fi
+                if ! run_cmd "$ACT_CI_CMD"; then
+                    echo "❌ CI con act falló. Se aborta el flujo (no se ofrece PR)."
+                    return 1
+                fi
         fi
     fi
 
