@@ -106,7 +106,6 @@ run_post_push_flow() {
     is_tty || return 0
     [[ "$POST_PUSH_FLOW" == "true" ]] || return 0
     
-    # Solo activar flujo si estamos en una rama feature (o fix/hotfix)
     if [[ "$head" != feature/* && "$head" != hotfix/* && "$head" != fix/* ]]; then return 0; fi
 
     echo
@@ -127,7 +126,7 @@ run_post_push_flow() {
     local OPT_PR="📨 Finalizar y Crear PR"
     local OPT_SKIP="🚪 Salir (Seguir trabajando)"
 
-    # --- Construcción dinámica del menú según herramientas detectadas ---
+    # --- Construcción dinámica del menú (FIX: Uso de ${VAR:-} para evitar crash con set -u) ---
     local choices=()
     
     # Gate estándar siempre disponible si hay comandos básicos
@@ -258,16 +257,11 @@ run_post_push_flow() {
     esac
 }
 
-# ==============================================================================
-# 3. HELPER: CREACIÓN DE PR
-# ==============================================================================
-
-# Extraído a función auxiliar para poder llamarlo desde el menú o tras el éxito del Gate
+# Helper: Creación de PR
 do_create_pr_flow() {
     local head="$1"
     local base="$2"
     
-    # Buscamos git-pr.sh relativo a esta librería (lib/../bin/git-pr.sh)
     local lib_dir
     lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     local pr_script="${lib_dir}/../bin/git-pr.sh"
@@ -278,7 +272,6 @@ do_create_pr_flow() {
             return 0
         fi
     elif command -v git-pr >/dev/null; then
-        # Fallback si está en el PATH
         if git-pr; then return 0; fi
     else
         echo "❌ No encuentro el script git-pr.sh en $pr_script ni en el PATH."
