@@ -12,21 +12,27 @@ detect_ci_tools() {
 
     # --- Nivel 1: CI Nativo (Prioridad: Contrato 'task ci') ---
     if [[ -z "${NATIVE_CI_CMD:-}" ]]; then
+        # 1. Si existe 'task ci' (estricto) en el Taskfile raíz, ÚSALO.
         if [[ -f "${root}/Taskfile.yaml" ]] && grep -qE '^[[:space:]]*ci:[[:space:]]*$' "${root}/Taskfile.yaml"; then
             export NATIVE_CI_CMD="task ci"
+        # 2. Fallback antiguo (estructura monorepo PMBOK)
         elif [[ -f "${root}/apps/pmbok/Taskfile.yaml" ]]; then
             export NATIVE_CI_CMD="task -d apps/pmbok test"
         else
+            # Default genérico
             export NATIVE_CI_CMD="task test"
         fi
     fi
 
     # --- Nivel 2: Act (GitHub Actions Local) ---
     if [[ -z "${ACT_CI_CMD:-}" ]]; then
+        # 1. Si existe 'task ci:act' (estricto)
         if [[ -f "${root}/Taskfile.yaml" ]] && grep -qE '^[[:space:]]*ci:act:[[:space:]]*$' "${root}/Taskfile.yaml"; then
             export ACT_CI_CMD="task ci:act"
+        # 2. Fallback antiguo
         elif [[ -f "${root}/.github/workflows/test/Taskfile.yaml" ]]; then
             export ACT_CI_CMD="task -t .github/workflows/test/Taskfile.yaml trigger"
+        # 3. Fallback directo a 'act' si existe la carpeta workflows
         elif command -v act >/dev/null && [ -d "${root}/.github/workflows" ]; then
             export ACT_CI_CMD="act"
         else
@@ -51,40 +57,37 @@ detect_ci_tools() {
     fi
 
     # --- Nivel 4: K8s Headless (Build -> Deploy -> Smoke) ---
+    # Detectamos si tienes los bloques para hacer un deploy "pro" sin interactividad
     if [[ -z "${K8S_HEADLESS_CMD:-}" ]]; then
         if [[ -f "${root}/Taskfile.yaml" ]]; then
+            # Verificamos que existan los 3 componentes clave en el Taskfile raíz
             has_build=$(grep -q "build:local" "${root}/Taskfile.yaml" && echo "yes")
             has_deploy=$(grep -q "deploy:local" "${root}/Taskfile.yaml" && echo "yes")
             has_smoke=$(grep -q "smoke:local" "${root}/Taskfile.yaml" && echo "yes")
             
             if [[ "$has_build" == "yes" && "$has_deploy" == "yes" && "$has_smoke" == "yes" ]]; then
+                # Ejecución en cadena
                 export K8S_HEADLESS_CMD="task build:local && task deploy:local && task smoke:local"
-            else
-                export K8S_HEADLESS_CMD=""
             fi
-        else
-            export K8S_HEADLESS_CMD=""
         fi
     fi
 
     # --- Nivel 5: K8s Full (Interactivo/Pipeline completo) ---
     if [[ -z "${K8S_FULL_CMD:-}" ]]; then
         if [[ -f "${root}/Taskfile.yaml" ]]; then
+            # Prioridad: Contrato 'pipeline:local'
             if grep -qE '^[[:space:]]*pipeline:local:[[:space:]]*$' "${root}/Taskfile.yaml"; then
                 export K8S_FULL_CMD="task pipeline:local"
+            # Fallback a detección legacy
             elif [[ -n "${LOCAL_PIPELINE_CMD:-}" ]]; then
                  export K8S_FULL_CMD="$LOCAL_PIPELINE_CMD"
-            else
-                 export K8S_FULL_CMD=""
             fi
-        else
-            export K8S_FULL_CMD=""
         fi
     fi
 }
 
 
-# Ejecutamos la detección al cargar la librería
+# Ejecutamos la detección al cargar la librería para tener las vars listas
 detect_ci_tools
 
 # ==============================================================================
@@ -95,6 +98,7 @@ run_post_push_flow() {
     local head="$1"
     local base="$2"
     
+    # Dependencias de utils.sh
     if ! command -v is_tty >/dev/null; then 
         echo "❌ Error: utils.sh no cargado (falta is_tty)"
         return 1
@@ -103,6 +107,7 @@ run_post_push_flow() {
     is_tty || return 0
     [[ "$POST_PUSH_FLOW" == "true" ]] || return 0
     
+    # Solo activar flujo si estamos en una rama feature (o fix/hotfix)
     if [[ "$head" != feature/* && "$head" != hotfix/* && "$head" != fix/* ]]; then return 0; fi
 
     echo
@@ -120,7 +125,7 @@ run_post_push_flow() {
     local OPT_PR="📨 Finalizar y Crear PR"
     local OPT_SKIP="🚪 Salir (Seguir trabajando)"
 
-    # --- Construcción dinámica del menú (FIX: Uso de ${VAR:-} para evitar crash con set -u) ---
+    # --- Construcción dinámica del menú según herramientas detectadas ---
     local choices=()
     
     # Gate estándar siempre disponible si hay comandos básicos
@@ -159,6 +164,7 @@ run_post_push_flow() {
                 echo
                 if run_cmd "$ACT_CI_CMD"; then
                     ui_success "✅ Gate completado."
+                    # Sugerir PR automáticamente si pasa el gate
                     echo
                     if ask_yes_no "¿Quieres crear el PR ahora?"; then
                         do_create_pr_flow "$head" "$base"
@@ -194,6 +200,23 @@ run_post_push_flow() {
         "$OPT_K8S_FULL")
             echo "▶️  Ejecutando Pipeline Full (Bloqueará la terminal)..."
             run_cmd "$K8S_FULL_CMD"
+            
+            # === FIX: MENSAJE DE RECONEXIÓN AMIGABLE ===
+            echo
+            ui_warn "🔌 Has desconectado los túneles del Pipeline."
+            echo
+            ui_info "Si cerraste por error o quieres seguir navegando, puedo reabrirlos por ti."
+            ui_info "Comando manual: task cluster:connect"
+            echo
+            
+            # Bucle infinito opcional: permite reabrir tantas veces como quiera
+            while ask_yes_no "¿Quieres volver a abrir los túneles ahora?"; do
+                echo "🔌 Reconectando..."
+                run_cmd "task cluster:connect"
+                echo
+                ui_warn "🔌 Túneles cerrados nuevamente."
+            done
+            ui_info "👌 Entendido. Túneles cerrados definitivamente."
             ;;
 
         "$OPT_PR")
@@ -202,11 +225,16 @@ run_post_push_flow() {
     esac
 }
 
-# Helper: Creación de PR
+# ==============================================================================
+# 3. HELPER: CREACIÓN DE PR
+# ==============================================================================
+
+# Extraído a función auxiliar para poder llamarlo desde el menú o tras el éxito del Gate
 do_create_pr_flow() {
     local head="$1"
     local base="$2"
     
+    # Buscamos git-pr.sh relativo a esta librería (lib/../bin/git-pr.sh)
     local lib_dir
     lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     local pr_script="${lib_dir}/../bin/git-pr.sh"
@@ -217,6 +245,7 @@ do_create_pr_flow() {
             return 0
         fi
     elif command -v git-pr >/dev/null; then
+        # Fallback si está en el PATH
         if git-pr; then return 0; fi
     else
         echo "❌ No encuentro el script git-pr.sh en $pr_script ni en el PATH."
