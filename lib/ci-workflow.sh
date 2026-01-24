@@ -2,8 +2,20 @@
 # /webapps/erd-ecosystem/.devtools/lib/ci-workflow.sh
 
 # ==============================================================================
-# 1. CONFIGURACIÓN Y DETECCIÓN (Auto-Discovery)
+# 1. CONFIGURACIÓN Y DETECCIÓN (Auto-Discovery Robusto)
 # ==============================================================================
+
+# Helper: Verifica si una tarea existe realmente en el Taskfile (incluso importada)
+task_exists() {
+    local task_name="$1"
+    # Ejecuta 'task --list' y busca la tarea exacta. 
+    # Redirigimos stderr para silenciar errores si task no está instalado.
+    if command -v task >/dev/null; then
+        task --list 2>/dev/null | grep -qE "(^|[[:space:]])${task_name}([[:space:]]|$)"
+    else
+        return 1
+    fi
+}
 
 detect_ci_tools() {
     root="$(git rev-parse --show-toplevel 2>/dev/null || echo ".")"
@@ -12,80 +24,52 @@ detect_ci_tools() {
 
     # --- Nivel 1: CI Nativo (Prioridad: Contrato 'task ci') ---
     if [[ -z "${NATIVE_CI_CMD:-}" ]]; then
-        # 1. Si existe 'task ci' (estricto) en el Taskfile raíz, ÚSALO.
-        if [[ -f "${root}/Taskfile.yaml" ]] && grep -qE '^[[:space:]]*ci:[[:space:]]*$' "${root}/Taskfile.yaml"; then
+        if task_exists "ci"; then
             export NATIVE_CI_CMD="task ci"
-        # 2. Fallback antiguo (estructura monorepo PMBOK)
+        elif task_exists "test"; then
+            export NATIVE_CI_CMD="task test"
         elif [[ -f "${root}/apps/pmbok/Taskfile.yaml" ]]; then
             export NATIVE_CI_CMD="task -d apps/pmbok test"
-        else
-            # Default genérico
-            export NATIVE_CI_CMD="task test"
         fi
     fi
 
     # --- Nivel 2: Act (GitHub Actions Local) ---
     if [[ -z "${ACT_CI_CMD:-}" ]]; then
-        # 1. Si existe 'task ci:act' (estricto)
-        if [[ -f "${root}/Taskfile.yaml" ]] && grep -qE '^[[:space:]]*ci:act:[[:space:]]*$' "${root}/Taskfile.yaml"; then
+        if task_exists "ci:act"; then
             export ACT_CI_CMD="task ci:act"
-        # 2. Fallback antiguo
-        elif [[ -f "${root}/.github/workflows/test/Taskfile.yaml" ]]; then
-            export ACT_CI_CMD="task -t .github/workflows/test/Taskfile.yaml trigger"
-        # 3. Fallback directo a 'act' si existe la carpeta workflows
-        elif command -v act >/dev/null && [ -d "${root}/.github/workflows" ]; then
+        elif [[ -d "${root}/.github/workflows" ]] && command -v act >/dev/null; then
             export ACT_CI_CMD="act"
-        else
-            export ACT_CI_CMD=""
         fi
     fi
 
     # --- Nivel 3: Compose (Runtime Dev / Smoke) ---
     if [[ -z "${COMPOSE_CI_CMD:-}" ]]; then
-        # 1. Buscamos 'task local:check' (alias root)
-        if [[ -f "${root}/Taskfile.yaml" ]] && grep -q "local:check" "${root}/Taskfile.yaml"; then
+        # Gracias a task_exists, esto detecta 'local:check' aunque venga de un include
+        if task_exists "local:check"; then
              export COMPOSE_CI_CMD="task local:check"
-        # 2. Buscamos la definición real en el módulo local (check:)
-        elif [[ -f "${root}/devops/tasks/local.yaml" ]] && grep -qE '^[[:space:]]*check:[[:space:]]*$' "${root}/devops/tasks/local.yaml"; then
-             # Asumimos que está incluido como "local" en el root
-             export COMPOSE_CI_CMD="task local:check"
-        elif [[ -f "${root}/Taskfile.yaml" ]] && grep -q "local:up" "${root}/Taskfile.yaml"; then
+        elif task_exists "local:up"; then
              export COMPOSE_CI_CMD="task local:up"
-        else
-             export COMPOSE_CI_CMD=""
         fi
     fi
 
     # --- Nivel 4: K8s Headless (Build -> Deploy -> Smoke) ---
-    # Detectamos si tienes los bloques para hacer un deploy "pro" sin interactividad
     if [[ -z "${K8S_HEADLESS_CMD:-}" ]]; then
-        if [[ -f "${root}/Taskfile.yaml" ]]; then
-            # Verificamos que existan los 3 componentes clave en el Taskfile raíz
-            has_build=$(grep -q "build:local" "${root}/Taskfile.yaml" && echo "yes")
-            has_deploy=$(grep -q "deploy:local" "${root}/Taskfile.yaml" && echo "yes")
-            has_smoke=$(grep -q "smoke:local" "${root}/Taskfile.yaml" && echo "yes")
-            
-            if [[ "$has_build" == "yes" && "$has_deploy" == "yes" && "$has_smoke" == "yes" ]]; then
-                # Ejecución en cadena
-                export K8S_HEADLESS_CMD="task build:local && task deploy:local && task smoke:local"
-            fi
+        # 1. Preferencia: Alias explícito si existiera (Future-proof)
+        if task_exists "pipeline:local:headless"; then
+            export K8S_HEADLESS_CMD="task pipeline:local:headless"
+        # 2. Composición dinámica: Si existen las 3 piezas clave
+        elif task_exists "build:local" && task_exists "deploy:local" && task_exists "smoke:local"; then
+            export K8S_HEADLESS_CMD="task build:local && task deploy:local && task smoke:local"
         fi
     fi
 
-    # --- Nivel 5: K8s Full (Interactivo/Pipeline completo) ---
+    # --- Nivel 5: K8s Full (Pipeline Interactivo) ---
     if [[ -z "${K8S_FULL_CMD:-}" ]]; then
-        if [[ -f "${root}/Taskfile.yaml" ]]; then
-            # Prioridad: Contrato 'pipeline:local'
-            if grep -qE '^[[:space:]]*pipeline:local:[[:space:]]*$' "${root}/Taskfile.yaml"; then
-                export K8S_FULL_CMD="task pipeline:local"
-            # Fallback a detección legacy
-            elif [[ -n "${LOCAL_PIPELINE_CMD:-}" ]]; then
-                 export K8S_FULL_CMD="$LOCAL_PIPELINE_CMD"
-            fi
+        if task_exists "pipeline:local"; then
+            export K8S_FULL_CMD="task pipeline:local"
         fi
     fi
 }
-
 
 # Ejecutamos la detección al cargar la librería para tener las vars listas
 detect_ci_tools
@@ -98,7 +82,7 @@ run_post_push_flow() {
     local head="$1"
     local base="$2"
     
-    # [FIX 1/3] Fallback de UI para robustez (si styles.sh no existe o no se cargó)
+    # [SAFETY] Fallback de UI: Define funciones dummy si styles.sh no cargó
     if ! declare -F ui_step_header >/dev/null 2>&1; then
         ui_step_header() { echo -e "\n>>> $1"; }
         ui_success() { echo "✅ $1"; }
@@ -219,13 +203,12 @@ run_post_push_flow() {
         "$OPT_K8S_FULL")
             echo "▶️  Ejecutando Pipeline Full (Bloqueará la terminal)..."
             
-            # [FIX 2/3] Manejo de Ctrl+C (130) como salida normal
+            # [UX] Manejo de Ctrl+C (130) como salida normal
             run_cmd "$K8S_FULL_CMD"
             local rc=$?
             
             if [[ "$rc" != "0" && "$rc" != "130" && "$rc" != "143" ]]; then
                 ui_error "❌ Pipeline full falló con código $rc"
-                # Podrías hacer return aquí, pero dejamos caer al menú de reconexión por si acaso
             else
                  # Si fue Ctrl+C (130) o éxito (0), lo tratamos amigablemente
                  echo
@@ -251,7 +234,7 @@ run_post_push_flow() {
             ;;
 
         "$OPT_PR")
-            # [FIX 3/3] Enforzar Gate antes de PR
+            # [PROCESS] Enforzar Gate antes de PR
             if [[ "${REQUIRE_GATE_BEFORE_PR:-true}" == "true" && "${gate_passed:-0}" != "1" && "${DEVTOOLS_ALLOW_PR_WITHOUT_GATE:-0}" != "1" ]]; then
                 ui_warn "🔒 Para crear PR debes pasar el Gate (Nativo + Act)."
                 echo "   Esto asegura que no subamos código roto."
