@@ -15,9 +15,11 @@ echo "🚀 Iniciando Pipeline Local (via Git)..."
 # Asegurar detección
 detect_ci_tools
 
-if [[ -n "${LOCAL_PIPELINE_CMD:-}" ]]; then
-  echo "▶️  Ejecutando: $LOCAL_PIPELINE_CMD"
-  $LOCAL_PIPELINE_CMD
+# CAMBIO FASE 1.1: Usar K8S_FULL_CMD en lugar de LOCAL_PIPELINE_CMD
+if [[ -n "${K8S_FULL_CMD:-}" ]]; then
+  echo "▶️  Ejecutando: $K8S_FULL_CMD"
+  # Usamos eval para permitir comandos compuestos (ej. "task build && task deploy")
+  eval "$K8S_FULL_CMD"
 else
   log_error "No se detectó un contrato de pipeline local (task pipeline:local)."
   echo "   Asegúrate de tener un Taskfile.yaml con la tarea 'pipeline:local'."

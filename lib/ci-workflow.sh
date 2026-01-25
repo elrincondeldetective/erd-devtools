@@ -93,7 +93,9 @@ detect_ci_tools
 detect_compose_active() {
     command -v docker >/dev/null || return 1
     # Indicador principal del stack: traefik (gateway único)
-    docker ps --format '{{.Names}}' 2>/dev/null | grep -Fxq "pmbok-traefik"
+    # MODIFICADO (1.4): Usar variable configurable en lugar de hardcode
+    local gateway="${COMPOSE_GATEWAY_CONTAINER:-pmbok-traefik}"
+    docker ps --format '{{.Names}}' 2>/dev/null | grep -Fxq "$gateway"
 }
 
 # Detecta si Minikube/K8s local está activo (runtime prod-like)
@@ -515,7 +517,9 @@ do_create_pr_flow() {
     local pr_script="${lib_dir}/../bin/git-pr.sh"
 
     if [[ -f "$pr_script" ]]; then
-        if "$pr_script"; then
+        # MODIFICADO (1.2): Exportamos BASE_BRANCH para que git-pr.sh sepa a dónde apuntar
+        BASE_BRANCH="$base" "$pr_script"
+        if [ $? -eq 0 ]; then
             echo "Gracias por el trabajo, en breve se revisa."
             return 0
         fi
