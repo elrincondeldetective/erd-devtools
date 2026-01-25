@@ -9,9 +9,9 @@ if [[ -z "$branch" ]]; then
   exit 1
 fi
 
-# CAMBIO: Validación por prefijo robusta (acepta feature/algo/mas)
-if [[ "$branch" != feature/* ]]; then
-  echo "❌ Política ERD: PRs solo desde ramas feature/**"
+# CAMBIO FASE 1.3: Permitir fix/ y hotfix/ además de feature/
+if [[ "$branch" != feature/* && "$branch" != fix/* && "$branch" != hotfix/* ]]; then
+  echo "❌ Política ERD: PRs solo desde feature/**, fix/** o hotfix/**"
   echo "   Rama actual: $branch"
   exit 1
 fi
