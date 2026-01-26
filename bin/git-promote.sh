@@ -298,8 +298,8 @@ promote_to_staging() {
     fi
     log_info "🔍 Comparando Dev -> Staging"
     generate_ai_prompt "dev" "origin/staging"
-
-    # [FIX] Inicializar variable para evitar error 'unbound variable' en strict mode
+    
+    # [SOLUCION 1] Inicializar variable para evitar error 'unbound variable' con set -u
     local tmp_notes=""
     tmp_notes="$(mktemp -t release-notes.XXXXXX.md)"
     trap 'rm -f "$tmp_notes"' EXIT
@@ -307,7 +307,7 @@ promote_to_staging() {
     capture_release_notes "$tmp_notes"
     [[ ! -s "$tmp_notes" ]] && { log_error "Notas vacías."; exit 1; }
     
-    # [FIX] Leer VERSION explícita del repositorio (si existe)
+    # [SOLUCION 2] Leer VERSION explícita del repositorio (si existe)
     local version_file="${SCRIPT_DIR}/../VERSION"
     local base_ver
     if [[ -f "$version_file" ]]; then
@@ -321,7 +321,7 @@ promote_to_staging() {
     local rc_num=$(next_rc_number "$base_ver")
     local suggested_tag="v${base_ver}-rc${rc_num}"
     
-    # [FIX] Opción de input manual
+    # [SOLUCION 3] Opción de input manual
     echo
     log_info "🔖 Tag sugerido: $suggested_tag"
     local rc_tag=""
@@ -329,7 +329,6 @@ promote_to_staging() {
     rc_tag="${rc_tag:-$suggested_tag}"
 
     prepend_release_notes_header "$tmp_notes" "Release Notes - ${rc_tag} (Staging)"
-    
     if ! ask_yes_no "¿Desplegar a STAGING con tag $rc_tag?"; then exit 0; fi
     ensure_clean_git
     update_branch_from_remote "staging"
@@ -350,7 +349,7 @@ promote_to_prod() {
     log_info "🚀 PROMOCIÓN A PRODUCCIÓN"
     generate_ai_prompt "staging" "origin/main"
     
-    # [FIX] Inicializar variable para evitar error 'unbound variable' en strict mode
+    # [SOLUCION 1] Inicializar variable para evitar error 'unbound variable' con set -u
     local tmp_notes=""
     tmp_notes="$(mktemp -t release-notes.XXXXXX.md)"
     trap 'rm -f "$tmp_notes"' EXIT
@@ -358,7 +357,7 @@ promote_to_prod() {
     capture_release_notes "$tmp_notes"
     [[ ! -s "$tmp_notes" ]] && { log_error "Notas vacías."; exit 1; }
     
-    # [FIX] Leer VERSION explícita del repositorio
+    # [SOLUCION 2] Leer VERSION explícita del repositorio
     local version_file="${SCRIPT_DIR}/../VERSION"
     local base_ver
     if [[ -f "$version_file" ]]; then
@@ -370,7 +369,7 @@ promote_to_prod() {
 
     local suggested_tag="v${base_ver}"
     
-    # [FIX] Opción de input manual
+    # [SOLUCION 3] Opción de input manual
     echo
     log_info "🔖 Tag sugerido: $suggested_tag"
     local release_tag=""
