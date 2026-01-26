@@ -4,10 +4,16 @@
 # ==============================================================================
 # CONFIGURACIÓN DE VERSIONADO
 # ==============================================================================
-# Archivo donde release-please guarda la verdad
-VERSION_FILE="apps/pmbok/.github/utils/.release-please-manifest.json"
-# Servicio principal para versionar el repo (usualmente backend)
-MAIN_SERVICE="backend"
+# Archivo fuente de verdad (La raíz del proyecto se asume un nivel arriba de .devtools o en root)
+# Intentamos localizar el archivo VERSION relativo a la posición de este script
+if [[ -f "${SCRIPT_DIR}/../../VERSION" ]]; then
+    VERSION_FILE="${SCRIPT_DIR}/../../VERSION"
+elif [[ -f "VERSION" ]]; then
+    VERSION_FILE="VERSION"
+else
+    # Fallback si no encuentra nada
+    VERSION_FILE="VERSION"
+fi
 
 # ==============================================================================
 # 1. HELPERS DE VERSIONADO (SEMVER / RC)
@@ -15,11 +21,69 @@ MAIN_SERVICE="backend"
 
 get_current_version() {
     if [ -f "$VERSION_FILE" ]; then
-        # Extrae la versión del backend (ej: 0.6.1) usando grep/sed
-        grep "\"$MAIN_SERVICE\":" "$VERSION_FILE" | sed -E 's/.*: "(.*)".*/\1/'
+        # Lee el archivo, quita espacios en blanco
+        cat "$VERSION_FILE" | tr -d '[:space:]'
     else
+        # Si no existe, iniciamos en 0.0.0
         echo "0.0.0"
     fi
+}
+
+# Lógica pura de SemVer basada en Conventional Commits
+calculate_next_version() {
+    local current_ver="$1"
+    
+    # Desglosar X.Y.Z
+    local major minor patch
+    IFS='.' read -r major minor patch <<< "$current_ver"
+    
+    # Si la versión viene vacía o mal formada, asumir 0.0.0
+    major=${major:-0}
+    minor=${minor:-0}
+    patch=${patch:-0}
+
+    # Rango de commits a analizar: Desde el tag vX.Y.Z hasta HEAD
+    local rev_range
+    if git rev-parse "v$current_ver" >/dev/null 2>&1; then
+        rev_range="v$current_ver..HEAD"
+    else
+        # Si no existe el tag (primer release), analizamos todo
+        rev_range="HEAD"
+    fi
+
+    # Extraer mensajes de commit (Subject + Body)
+    local commit_msgs
+    commit_msgs=$(git log "$rev_range" --format="%s%n%b")
+
+    # Si no hay commits, no subimos versión
+    if [[ -z "$commit_msgs" ]]; then
+        echo "$current_ver"
+        return
+    fi
+
+    # 1. Chequeo de BREAKING CHANGE (Major)
+    # Busca "BREAKING CHANGE" o strings que terminan en !: (ej: feat!:)
+    if echo "$commit_msgs" | grep -qE "BREAKING CHANGE|!:"; then
+        major=$((major + 1))
+        minor=0
+        patch=0
+        echo "$major.$minor.$patch"
+        return
+    fi
+
+    # 2. Chequeo de Feature (Minor)
+    # Busca líneas que empiecen con "feat:" o "feat("
+    if echo "$commit_msgs" | grep -qE "^feat(\(.*\))?:"; then
+        minor=$((minor + 1))
+        patch=0
+        echo "$major.$minor.$patch"
+        return
+    fi
+
+    # 3. Chequeo de Fix (Patch) - O cualquier otro cambio (chore, docs, etc)
+    # Por defecto, si hay cambios y no son feat/breaking, subimos patch
+    patch=$((patch + 1))
+    echo "$major.$minor.$patch"
 }
 
 next_rc_number() {
@@ -104,8 +168,9 @@ generate_ai_prompt() {
         echo "🤖 Generando prompt para Release Notes..."
     fi
     
-    diff_stat=$(git diff --stat "$to_branch..$from_branch")
-    commit_log=$(git log --pretty=format:"- %s (%an)" "$to_branch..$from_branch")
+    # Intentamos ser resilientes con ramas remotas
+    diff_stat=$(git diff --stat "$to_branch..$from_branch" 2>/dev/null || echo "No diff available")
+    commit_log=$(git log --pretty=format:"- %s (%an)" "$to_branch..$from_branch" 2>/dev/null || echo "No log available")
     
     cat <<EOF
 --------------------------------------------------------------------------------
