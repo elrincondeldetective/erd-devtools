@@ -1,35 +1,53 @@
 # /webapps/erd-ecosystem/.devtools/.github/workflows/release-on-tag.yaml
-name: GitHub Release on Tag
+name: Publish GitHub Release (Tags)
 
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: write
 
 jobs:
-  create-release:
-    runs-on: ubuntu-latest
+  publish:
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout (full history for tag annotations)
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Determine Prerelease
-        id: check_prerelease
+      - name: Read tag message (release notes)
+        id: notes
+        shell: bash
         run: |
-          if [[ "${{ github.ref_name }}" == *"-rc"* ]]; then
-            echo "is_prerelease=true" >> $GITHUB_OUTPUT
-          else
-            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+
+          # Lee el contenido del tag anotado (lo que guardas con -F en git-promote.sh)
+          body="$(git for-each-ref "refs/tags/${tag}" --format='%(contents)')"
+
+          # Fallback por si el tag fuera lightweight (sin notas)
+          if [ -z "$body" ]; then
+            body="Release ${tag}"
           fi
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
+          {
+            echo "body<<'EOF'"
+            echo "$body"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          if [[ "$tag" == *"-rc"* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
-          prerelease: ${{ steps.check_prerelease.outputs.is_prerelease }}
-          generate_release_notes: true
+          body: ${{ steps.notes.outputs.body }}
+          prerelease: ${{ steps.notes.outputs.prerelease }}

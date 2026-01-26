@@ -277,16 +277,65 @@ promote_dev_update_squash() {
 # ==============================================================================
 
 promote_to_dev() {
-    local current=$(git branch --show-current)
-    if [[ "$current" == "dev" || "$current" == "staging" || "$current" == "main" ]]; then
-        log_error "Estás en '$current'. Debes estar en una feature branch."
+    local current_branch=$(git branch --show-current)
+    
+    # --------------------------------------------------------------------------
+    # NUEVA LÓGICA: INTERCEPCIÓN DE PR PARA DEV (GITHUB CLI)
+    # --------------------------------------------------------------------------
+    # Si tenemos 'gh' instalado, buscamos PRs abiertos para fusionar limpiamente
+    if command -v gh &> /dev/null; then
+        echo "🔍 Buscando PRs abiertos para '$current_branch'..."
+        
+        # Obtenemos el número del PR si existe (json number)
+        local pr_number
+        pr_number=$(gh pr list --head "$current_branch" --state open --json number --jq '.[0].number')
+
+        if [[ -n "$pr_number" ]]; then
+            banner "🤖 MODO AUTOMÁTICO DETECTADO (PR #$pr_number)"
+            echo "ℹ️  Esta rama tiene un PR abierto."
+            echo "    Podemos delegar la fusión a GitHub para:"
+            echo "    1. Esperar que pasen los Checks (CI/CD)"
+            echo "    2. Hacer Squash Merge automático"
+            echo "    3. Borrar la rama remota al terminar"
+            echo
+            
+            # Confirmación de seguridad
+            if ask_yes_no "❓ ¿Deseas auto-fusionar (Squash) el PR #$pr_number cuando pasen los checks?"; then
+                
+                echo "🚀 Enviando orden a GitHub..."
+                # --auto: Espera a que pasen los checks (CI/CD)
+                # --squash: Genera un solo commit limpio
+                # --delete-branch: Limpieza automática de la rama del bot/feature
+                gh pr merge "$pr_number" --auto --squash --delete-branch
+                
+                echo "⏳ La orden ha sido enviada. GitHub fusionará cuando los tests pasen."
+                echo "🔄 Esperando para sincronizar el 'Golden SHA'..."
+                
+                # Bucle de espera simple o simplemente nos movemos a dev y pulleamos
+                git checkout dev
+                echo "📡 Trayendo la nueva verdad desde origin/dev..."
+                git pull origin dev
+                
+                banner "✅ PR EN COLAS DE FUSIÓN O FUSIONADO"
+                echo "👌 Estás en 'dev'. Cuando GitHub termine, haz 'git pull' para ver el SHA final."
+                echo "👉 Siguiente paso sugerido: git promote staging (cuando el CI termine)"
+                exit 0
+            fi
+        fi
+    fi
+    # --------------------------------------------------------------------------
+    # FIN NUEVA LÓGICA
+    # --------------------------------------------------------------------------
+
+    if [[ "$current_branch" == "dev" || "$current_branch" == "staging" || "$current_branch" == "main" ]]; then
+        log_error "Estás en '$current_branch'. Debes estar en una feature branch."
         exit 1
     fi
     log_warn "🚧 PROMOCIÓN A DEV (Destructiva)"
-    if ! ask_yes_no "¿Aplastar 'dev' con '$current'?"; then exit 0; fi
+    if ! ask_yes_no "¿Aplastar 'dev' con '$current_branch'?"; then exit 0; fi
     ensure_clean_git
     update_branch_from_remote "dev" "origin" "true"
-    git reset --hard "$current"
+    git reset --hard "$current_branch"
     git push origin dev --force
     log_success "✅ Dev actualizado."
     
