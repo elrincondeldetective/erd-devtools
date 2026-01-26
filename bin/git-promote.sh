@@ -34,6 +34,7 @@ promote_sync_all() {
     # Definimos la "Rama Madre" de desarrollo
     local canonical_branch="feature/dev-update"
     local source_branch="$canonical_branch"
+    local force_push_source="false"
 
     echo
     log_info "🔄 INICIANDO SMART SYNC"
@@ -55,12 +56,15 @@ promote_sync_all() {
             # 1. Ir a la rama madre y actualizarla
             update_branch_from_remote "$canonical_branch"
             
-            # 2. Fusionar la rama accidental
-            if git merge "$current_branch"; then
-                log_success "✅ Fusión exitosa."
+            # 2. Fusionar la rama accidental (sin conflictos: preferir 'theirs'; fallback aplastante)
+            if git merge -X theirs "$current_branch"; then
+                log_success "✅ Fusión exitosa (auto-resuelta con 'theirs')."
             else
-                log_error "Conflicto al fusionar. Resuélvelo manualmente y vuelve a ejecutar."
-                exit 1
+                log_warn "🧨 Conflictos detectados. Aplicando modo APLASTANTE para absorber '$current_branch'..."
+                git merge --abort || true
+                git reset --hard "$current_branch"
+                force_push_source="true"
+                log_success "✅ Absorción aplastante completada."
             fi
             
             # 3. Eliminar rama temporal
@@ -86,17 +90,26 @@ promote_sync_all() {
 
     # Asegurar fuente actualizada
     if [[ "$source_branch" == "$canonical_branch" ]]; then
-        git push origin "$source_branch"
+        if [[ "$force_push_source" == "true" ]]; then
+            log_warn "🧨 MODO APLASTANTE: forzando push de '$source_branch' (lease)..."
+            git push origin "$source_branch" --force-with-lease
+        else
+            git push origin "$source_branch"
+        fi
     else
         git pull origin "$source_branch" || true
     fi
 
-    # Cascada
+    # Cascada (APLASTANTE)
     for target in dev staging main; do
-        log_info "🚀 Sincronizando ${target^^}..."
+        log_info "🚀 Sincronizando ${target^^} (APLASTANTE)..."
         update_branch_from_remote "$target"
-        git merge "$source_branch" -m "chore(sync): merge $source_branch into $target"
-        git push origin "$target"
+
+        log_warn "🧨 MODO APLASTANTE: sobrescribiendo '$target' con '$source_branch'..."
+        git reset --hard "$source_branch"
+
+        # Preferible a --force: evita pisar trabajo ajeno si el remoto cambió desde tu fetch
+        git push origin "$target" --force-with-lease
     done
 
     # Volver a Casa
