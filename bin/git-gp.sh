@@ -14,7 +14,7 @@ source "${LIB_DIR}/git-context.sh" # Lógica de extracción de diffs y tickets
 source "${LIB_DIR}/ai-prompts.sh"  # Templates de Prompts para la IA
 
 # ==============================================================================
-# 2. RECOLECCIÓN DE DATOS (CONTEXTO)
+# 2. RECOLECCIÓN DE DATOS (CONTEXTO).
 # ==============================================================================
 log_info "🤖 La IA está analizando tus cambios y archivos nuevos..."
 
