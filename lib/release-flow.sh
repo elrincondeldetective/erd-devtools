@@ -87,6 +87,7 @@ calculate_next_version() {
     echo "$major.$minor.$patch"
 }
 
+# [FIX] Corregido para iniciar en 1 si no hay RCs previos para ESTA versión
 next_rc_number() {
     local base_ver="$1"
     local pattern="v${base_ver}-rc"
@@ -95,13 +96,25 @@ next_rc_number() {
     # Asegura que vemos tags del remoto también
     git fetch origin --tags --force >/dev/null 2>&1 || true
 
-    # Lista tags existentes tipo v0.6.1-rc1, v0.6.1-rc2...
+    # Filtrar estrictamente tags que coincidan con vX.Y.Z-rcN
+    local tags
+    tags=$(git tag -l "${pattern}*")
+    
+    # Si no hay tags para ESTA versión específica (ej: v2.0.2), empezamos en 1
+    if [[ -z "$tags" ]]; then
+        echo "1"
+        return
+    fi
+
     while read -r t; do
         [[ -z "$t" ]] && continue
+        # Extraer solo el número después de -rc
         local n="${t#${pattern}}"
-        [[ "$n" =~ ^[0-9]+$ ]] || continue
-        (( n > max )) && max="$n"
-    done < <(git tag -l "${pattern}[0-9]*")
+        # Validar que sea número entero
+        if [[ "$n" =~ ^[0-9]+$ ]]; then
+            (( n > max )) && max="$n"
+        fi
+    done <<< "$tags"
 
     echo $((max + 1))
 }
