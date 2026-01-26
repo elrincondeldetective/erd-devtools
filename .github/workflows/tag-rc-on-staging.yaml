@@ -1,0 +1,45 @@
+# /webapps/erd-ecosystem/.devtools/.github/workflows/tag-rc-on-staging.yaml
+name: Tag RC on Staging
+
+on:
+  push:
+    branches:
+      - staging
+
+jobs:
+  tag-rc:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calculate Next RC Tag
+        id: tag_calc
+        run: |
+          VERSION=$(cat VERSION | tr -d '[:space:]')
+          echo "Base version: $VERSION"
+          
+          # Buscar tags existentes para esta versión (vX.Y.Z-rc*)
+          EXISTING_RCS=$(git tag -l "v$VERSION-rc*" | sort -V | tail -n 1)
+          
+          if [ -z "$EXISTING_RCS" ]; then
+            NEW_TAG="v$VERSION-rc1"
+          else
+            # Extraer el número del último rc y sumar 1
+            LAST_NUM=$(echo $EXISTING_RCS | sed -E "s/v$VERSION-rc([0-9]+)/\1/")
+            NEXT_NUM=$((LAST_NUM + 1))
+            NEW_TAG="v$VERSION-rc$NEXT_NUM"
+          fi
+          
+          echo "New tag: $NEW_TAG"
+          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+
+      - name: Push RC Tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a ${{ steps.tag_calc.outputs.new_tag }} -m "Release Candidate ${{ steps.tag_calc.outputs.new_tag }}"
+          git push origin ${{ steps.tag_calc.outputs.new_tag }}
