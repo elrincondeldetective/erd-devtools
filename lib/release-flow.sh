@@ -30,6 +30,7 @@ get_current_version() {
 }
 
 # Lógica pura de SemVer basada en Conventional Commits
+# MODIFICADO: Garantiza que cualquier cambio suba al menos el Patch.
 calculate_next_version() {
     local current_ver="$1"
     
@@ -37,7 +38,7 @@ calculate_next_version() {
     local major minor patch
     IFS='.' read -r major minor patch <<< "$current_ver"
     
-    # Si la versión viene vacía o mal formada, asumir 0.0.0
+    # Sanitización: Si la versión viene vacía o mal formada, asumir 0.0.0
     major=${major:-0}
     minor=${minor:-0}
     patch=${patch:-0}
@@ -55,7 +56,7 @@ calculate_next_version() {
     local commit_msgs
     commit_msgs=$(git log "$rev_range" --format="%s%n%b")
 
-    # Si no hay commits, no subimos versión
+    # Si no hay commits, mantenemos la versión actual (idempotencia)
     if [[ -z "$commit_msgs" ]]; then
         echo "$current_ver"
         return
@@ -80,8 +81,8 @@ calculate_next_version() {
         return
     fi
 
-    # 3. Chequeo de Fix (Patch) - O cualquier otro cambio (chore, docs, etc)
-    # Por defecto, si hay cambios y no son feat/breaking, subimos patch
+    # 3. CUALQUIER otro cambio (fix, chore, docs, style, refactor, perf) -> Patch
+    # Garantiza que siempre generamos una nueva versión si hay commits.
     patch=$((patch + 1))
     echo "$major.$minor.$patch"
 }
