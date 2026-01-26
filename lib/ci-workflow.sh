@@ -2,274 +2,20 @@
 # /webapps/erd-ecosystem/.devtools/lib/ci-workflow.sh
 
 # ==============================================================================
-# 1. CONFIGURACIÓN Y DETECCIÓN (Auto-Discovery Robusto)
+# 0. IMPORTS & BOOTSTRAP
 # ==============================================================================
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Helper: Verifica si una tarea existe realmente en el Taskfile (incluso importada)
-task_exists() {
-    local task_name="$1"
-    command -v task >/dev/null || return 1
+# Cargar módulos refactorizados
+source "${SCRIPT_DIR}/ci/detection.sh"
+source "${SCRIPT_DIR}/ci/ui.sh"
+source "${SCRIPT_DIR}/ci/actions.sh"
 
-    task --list 2>/dev/null | awk '
-        /^task:/ {next}          # ignora encabezados tipo "task: Available tasks..."
-        NF==0 {next}             # ignora líneas vacías
-        {
-            # Formatos comunes:
-            # 1) "* ci:      desc"      -> $1="*"  $2="ci:"
-            # 2) "ci:        desc"      -> $1="ci:"
-            # 3) "- ci:      desc"      -> $1="-"  $2="ci:"
-            # 4) "ci         desc"      -> $1="ci"
-            if ($1 ~ /^[*+-]$/) { name=$2 } else { name=$1 }
-            gsub(/^[*+-]+/, "", name)   # quita bullets pegados: *, -, +
-            gsub(/:$/, "", name)        # quita ":" final si existe
-            print name
-        }
-    ' | grep -Fxq "$task_name"
-}
-
-detect_ci_tools() {
-    root="$(git rev-parse --show-toplevel 2>/dev/null || echo ".")"
-
-    : "${POST_PUSH_FLOW:=true}"
-
-    # --- Nivel 1: CI Nativo (Prioridad: Contrato 'task ci') ---
-    if [[ -z "${NATIVE_CI_CMD:-}" ]]; then
-        if task_exists "ci"; then
-            export NATIVE_CI_CMD="task ci"
-        elif task_exists "test"; then
-            export NATIVE_CI_CMD="task test"
-        elif [[ -f "${root}/apps/pmbok/Taskfile.yaml" ]]; then
-            export NATIVE_CI_CMD="task -d apps/pmbok test"
-        fi
-    fi
-
-    # --- Nivel 2: Act (GitHub Actions Local) ---
-    if [[ -z "${ACT_CI_CMD:-}" ]]; then
-        if task_exists "ci:act"; then
-            export ACT_CI_CMD="task ci:act"
-        # FIX: fallback seguro (NO usar `act` pelado). Si existe el wrapper Taskfile, úsalo.
-        elif [[ -f "${root}/.github/workflows/test/Taskfile.yaml" ]]; then
-            export ACT_CI_CMD="task -t .github/workflows/test/Taskfile.yaml trigger"
-        fi
-    fi
-
-    # --- Nivel 3: Compose (Runtime Dev / Smoke) ---
-    if [[ -z "${COMPOSE_CI_CMD:-}" ]]; then
-        # Gracias a task_exists, esto detecta 'local:check' aunque venga de un include
-        if task_exists "local:check"; then
-                export COMPOSE_CI_CMD="task local:check"
-        elif task_exists "local:up"; then
-                export COMPOSE_CI_CMD="task local:up"
-        fi
-    fi
-
-    # --- Nivel 4: K8s Headless (Build -> Deploy -> Smoke) ---
-    if [[ -z "${K8S_HEADLESS_CMD:-}" ]]; then
-        # 1. Preferencia: Alias explícito si existiera (Future-proof)
-        if task_exists "pipeline:local:headless"; then
-            export K8S_HEADLESS_CMD="task pipeline:local:headless"
-        # 2. Composición dinámica: Si existen las 3 piezas clave
-        elif task_exists "build:local" && task_exists "deploy:local" && task_exists "smoke:local"; then
-            export K8S_HEADLESS_CMD="task build:local && task deploy:local && task smoke:local"
-        fi
-    fi
-
-    # --- Nivel 5: K8s Full (Pipeline Interactivo) ---
-    if [[ -z "${K8S_FULL_CMD:-}" ]]; then
-        if task_exists "pipeline:local"; then
-            export K8S_FULL_CMD="task pipeline:local"
-        fi
-    fi
-}
-
-# Ejecutamos la detección al cargar la librería para tener las vars listas
+# Ejecutar detección inicial al cargar
 detect_ci_tools
 
 # ==============================================================================
-# 1.1. DETECCIÓN DE ENTORNO ACTIVO (DevX: Runtime + Alternativas)
-# ==============================================================================
-
-# Detecta si Docker Compose (Traefik) está activo (stack runtime)
-detect_compose_active() {
-    command -v docker >/dev/null || return 1
-    # Indicador principal del stack: traefik (gateway único)
-    # MODIFICADO (1.4): Usar variable configurable en lugar de hardcode
-    local gateway="${COMPOSE_GATEWAY_CONTAINER:-pmbok-traefik}"
-    docker ps --format '{{.Names}}' 2>/dev/null | grep -Fxq "$gateway"
-}
-
-# Detecta si Minikube/K8s local está activo (runtime prod-like)
-detect_minikube_active() {
-    # Contexto actual
-    if command -v kubectl >/dev/null; then
-        local ctx
-        ctx="$(kubectl config current-context 2>/dev/null || echo "")"
-        if [[ "$ctx" == "minikube" ]]; then
-            # Si minikube está instalado, verificamos que esté corriendo
-            if command -v minikube >/dev/null; then
-                minikube status 2>/dev/null | grep -q "Running"
-                return $?
-            fi
-            # Si no está minikube, pero el contexto es minikube, asumimos activo.
-            return 0
-        fi
-    fi
-
-    # Fallback: minikube status (si kubectl no está o el contexto no está configurado)
-    if command -v minikube >/dev/null; then
-        minikube status 2>/dev/null | grep -q "Running"
-        return $?
-    fi
-
-    return 1
-}
-
-# Detecta si estamos dentro de Devbox (toolchain / shell)
-detect_devbox_active() {
-    # Devbox suele exportar DEVBOX_ENV_NAME, pero no es garantía universal.
-    [[ -n "${DEVBOX_ENV_NAME:-}" ]] && return 0
-    [[ -n "${DEVBOX_SHELL_ENABLED:-}" ]] && return 0
-    [[ -n "${IN_DEVBOX_SHELL:-}" ]] && return 0
-    return 1
-}
-
-# Render “bonito” del estado de entorno (activo + alternativas)
-render_env_status_panel() {
-    local -a active_envs=()
-    local -a runtime_suggestions=()
-    local -a validation_suggestions=()
-
-    # Activos
-    if detect_devbox_active; then
-        active_envs+=("🧰 Devbox (toolchain)")
-    fi
-    if detect_compose_active; then
-        active_envs+=("🐳 Docker Compose (Traefik)")
-    fi
-    if detect_minikube_active; then
-        active_envs+=("☸️  Minikube GitOps")
-    fi
-
-    # Sugerencias de activación (runtime)
-    if ! detect_compose_active; then
-        if task_exists "local:up"; then
-            runtime_suggestions+=("🐳 Activar Compose:   task local:up")
-        elif task_exists "local:check"; then
-            runtime_suggestions+=("🐳 Compose (check):   task local:check")
-        fi
-    fi
-
-    if ! detect_minikube_active; then
-        # Preferimos el alias “cluster:up” porque es el contrato del root Taskfile
-        if task_exists "cluster:up"; then
-            runtime_suggestions+=("☸️  Activar Minikube:  task cluster:up")
-        elif task_exists "local:cluster:up"; then
-            runtime_suggestions+=("☸️  Activar Minikube:  task local:cluster:up")
-        fi
-    fi
-
-    # Sugerencias rápidas de logs cuando Compose está activo (Traefik/runtime)
-    if detect_compose_active; then
-        if task_exists "local:logs:traefik"; then
-            runtime_suggestions+=("📄 Logs Traefik:       task local:logs:traefik")
-        fi
-        if task_exists "local:logs"; then
-            runtime_suggestions+=("📄 Logs Compose:       task local:logs")
-        fi
-        if task_exists "local:logs:backend"; then
-            runtime_suggestions+=("📄 Logs Backend:       task local:logs:backend")
-        fi
-        if task_exists "local:logs:frontend"; then
-            runtime_suggestions+=("📄 Logs Frontend:      task local:logs:frontend")
-        fi
-        if task_exists "local:logs:db"; then
-            runtime_suggestions+=("📄 Logs DB:            task local:logs:db")
-        fi
-
-        # Fallback manual (por si no existe local:logs:traefik todavía)
-        if ! task_exists "local:logs:traefik" && command -v docker >/dev/null 2>&1; then
-            runtime_suggestions+=("📄 Logs Traefik:       docker compose -f devops/local/compose.yml logs -f --tail=200 traefik")
-        fi
-    fi
-
-    # Sugerencia de observabilidad (k9s) para ver logs / pods
-    if task_exists "ui:local"; then
-        runtime_suggestions+=("👀 Ver logs en K9s:   task ui:local")
-    elif command -v k9s >/dev/null 2>&1; then
-        runtime_suggestions+=("👀 Ver logs en K9s:   k9s")
-    fi
-
-    # Sugerencias de validación (no-runtime, pero útiles para “probar build/calidad”)
-    [[ -n "${NATIVE_CI_CMD:-}" ]] && validation_suggestions+=("🔍 CI nativo:         ${NATIVE_CI_CMD}")
-    [[ -n "${ACT_CI_CMD:-}" ]]    && validation_suggestions+=("🎬 CI con Act:        ${ACT_CI_CMD}")
-    [[ -n "${K8S_HEADLESS_CMD:-}" ]] && validation_suggestions+=("🤖 K8s headless:      ${K8S_HEADLESS_CMD}")
-    [[ -n "${K8S_FULL_CMD:-}" ]]     && validation_suggestions+=("🚀 K8s full:          ${K8S_FULL_CMD}")
-
-    # Construir strings
-    local active_txt
-    if [[ "${#active_envs[@]}" -gt 0 ]]; then
-        active_txt="$(printf "%s\n" "${active_envs[@]}")"
-    else
-        active_txt="(Ninguno)"
-    fi
-
-    local runtime_txt
-    if [[ "${#runtime_suggestions[@]}" -gt 0 ]]; then
-        runtime_txt="$(printf "%s\n" "${runtime_suggestions[@]}")"
-    else
-        runtime_txt="(No hay sugerencias de runtime detectables)"
-    fi
-
-    local validation_txt
-    if [[ "${#validation_suggestions[@]}" -gt 0 ]]; then
-        validation_txt="$(printf "%s\n" "${validation_suggestions[@]}")"
-    else
-        validation_txt="(No se detectaron comandos de validación)"
-    fi
-
-    # Render UI (gum si está disponible, fallback texto)
-    if have_gum_ui; then
-        echo
-        gum style \
-            --border rounded --padding "1 2" --margin "0 0" \
-            "🧭 Entornos de trabajo" \
-            "" \
-            "Activo(s):" \
-            "$active_txt" \
-            "" \
-            "Puedes activar:" \
-            "$runtime_txt" \
-            "" \
-            "Validaciones disponibles:" \
-            "$validation_txt"
-        echo
-    else
-        echo
-        echo "════════════════════════════════════════════════════"
-        echo "🧭 Entornos de trabajo"
-        echo "════════════════════════════════════════════════════"
-        echo "Activo(s):"
-        echo "$active_txt" | sed 's/^/  - /'
-        echo
-        # Si no hay runtime activo, mostramos mensaje claro
-        if ! detect_compose_active && ! detect_minikube_active; then
-            echo "⚠️  No tienes un entorno de runtime activo para probar build/smoke."
-            echo "   Activa uno para continuar:"
-            echo "$runtime_txt" | sed 's/^/  • /'
-        else
-            echo "Puedes activar:"
-            echo "$runtime_txt" | sed 's/^/  • /'
-        fi
-        echo
-        echo "Validaciones disponibles:"
-        echo "$validation_txt" | sed 's/^/  • /'
-        echo "════════════════════════════════════════════════════"
-        echo
-    fi
-}
-
-# ==============================================================================
-# 2. FLUJO POST-PUSH (Menu Interactivo por Niveles)
+# 1. FLUJO POST-PUSH (Orquestador del Menú)
 # ==============================================================================
 
 run_post_push_flow() {
@@ -283,30 +29,34 @@ run_post_push_flow() {
         ui_error() { echo "❌ $1"; }
         ui_warn() { echo "⚠️  $1"; }
         ui_info() { echo "ℹ️  $1"; }
-        have_gum_ui() { command -v gum >/dev/null; }
         ask_yes_no() {
             local prompt="$1"
             read -r -p "$prompt [y/N] " response
             [[ "$response" =~ ^[yY] ]]
         }
+        # Helper simple para ejecutar comandos si run_cmd no existe
+        if ! declare -F run_cmd >/dev/null 2>&1; then
+            run_cmd() { eval "$@"; }
+        fi
     fi
 
-    # Dependencias de utils.sh
+    # Dependencias de utils.sh (check de TTY)
     if ! command -v is_tty >/dev/null; then 
-        # Fallback simple para is_tty si utils.sh falló
         is_tty() { [ -t 1 ]; }
     fi
 
     is_tty || return 0
     [[ "$POST_PUSH_FLOW" == "true" ]] || return 0
     
+    # Solo ejecutar en ramas de trabajo
     if [[ "$head" != feature/* && "$head" != hotfix/* && "$head" != fix/* ]]; then return 0; fi
 
-    # --- FIX: Re-detectar SIEMPRE (evita variables cacheadas / estado viejo) ---
+    # --- 1. Re-detectar herramientas (frescura) ---
+    # Limpiamos variables para forzar re-evaluación en detection.sh
     unset NATIVE_CI_CMD ACT_CI_CMD COMPOSE_CI_CMD K8S_HEADLESS_CMD K8S_FULL_CMD
     detect_ci_tools
 
-    # --- DevX: Mostrar entorno activo + alternativas (runtime + validaciones) ---
+    # --- 2. Mostrar Dashboard (UI Module) ---
     render_env_status_panel
 
     echo
@@ -317,7 +67,7 @@ run_post_push_flow() {
     # Variable para controlar si el usuario pasó los tests
     local gate_passed=0
 
-    # --- Definición de Opciones del Menú ---
+    # --- 3. Definición de Opciones del Menú ---
     local OPT_GATE="✅ Gate Estándar (Nativo + Act)"
     local OPT_NATIVE="🔍 Solo Nativo (Rápido)"
     local OPT_ACT="🎬 Solo Act (GH Actions)"
@@ -330,7 +80,7 @@ run_post_push_flow() {
     local OPT_PR="📨 Finalizar y Crear PR"
     local OPT_SKIP="🚪 Salir (Seguir trabajando)"
 
-    # --- Construcción dinámica del menú (FIX: Uso de ${VAR:-} para evitar crash con set -u) ---
+    # --- 4. Construcción dinámica del menú ---
     local choices=()
     
     # Gate estándar siempre disponible si hay comandos básicos
@@ -356,7 +106,7 @@ run_post_push_flow() {
     choices+=("$OPT_PR")
     choices+=("$OPT_SKIP")
 
-    # --- Selección ---
+    # --- 5. Selección (Input) ---
     local selected
     if have_gum_ui; then
         selected=$(gum choose --header "Selecciona un nivel de validación:" "${choices[@]}")
@@ -370,7 +120,7 @@ run_post_push_flow() {
         return 0
     fi
 
-    # --- Ejecución ---
+    # --- 6. Ejecución (Router) ---
     case "$selected" in
         "$OPT_GATE")
             echo "▶️  Ejecutando Gate Estándar..."
@@ -435,7 +185,7 @@ run_post_push_flow() {
             ui_info "Comando manual: task cluster:connect"
             echo
             
-            # Bucle infinito opcional: permite reabrir tantas veces como quiera
+            # Bucle infinito opcional
             while ask_yes_no "¿Quieres volver a abrir los túneles ahora?"; do
                 echo "🔌 Reconectando..."
                 run_cmd "task cluster:connect"
@@ -502,34 +252,8 @@ run_post_push_flow() {
                 fi
             fi
 
+            # Llamada al módulo Actions
             do_create_pr_flow "$head" "$base"
             ;;
     esac
-}
-
-# Helper: Creación de PR
-do_create_pr_flow() {
-    local head="$1"
-    local base="$2"
-    
-    local lib_dir
-    lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local pr_script="${lib_dir}/../bin/git-pr.sh"
-
-    if [[ -f "$pr_script" ]]; then
-        # MODIFICADO (1.2): Exportamos BASE_BRANCH para que git-pr.sh sepa a dónde apuntar
-        BASE_BRANCH="$base" "$pr_script"
-        if [ $? -eq 0 ]; then
-            echo "Gracias por el trabajo, en breve se revisa."
-            return 0
-        fi
-    elif command -v git-pr >/dev/null; then
-        if git-pr; then return 0; fi
-    else
-        echo "❌ No encuentro el script git-pr.sh en $pr_script ni en el PATH."
-        return 1
-    fi
-    
-    echo "⚠️ Hubo un problema creando el PR."
-    return 1
 }
