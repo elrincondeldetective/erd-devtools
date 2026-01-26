@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/elrincondeldetective/erd-devtools/compare/erd-devtools-v2.0.0...erd-devtools-v2.1.0) (2026-01-26)
+
+
+### Features
+
+* **promote:** habilitar sync aplastante con `--force-with-lease` en `bin/git-promote.sh` ([40c449c](https://github.com/elrincondeldetective/erd-devtools/commit/40c449cf677ec21d5da49d0910c3399947afc991))
+
 ## [2.0.0](https://github.com/elrincondeldetective/erd-devtools/compare/erd-devtools-v1.1.0...erd-devtools-v2.0.0) (2026-01-24)
 
 
