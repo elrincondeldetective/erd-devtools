@@ -3,6 +3,9 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+# [FIX] Inicializamos variable global para evitar error en trap con set -u
+tmp_notes=""
+
 # ==============================================================================
 # 1. BOOTSTRAP DE LIBRERÍAS
 # ==============================================================================
@@ -286,7 +289,9 @@ promote_to_dev() {
     git reset --hard "$current"
     git push origin dev --force
     log_success "✅ Dev actualizado."
-    git checkout "$current"
+    
+    # [FIX] Ahora terminamos en DEV, no en la feature branch
+    git checkout dev
 }
 
 promote_to_staging() {
@@ -300,7 +305,6 @@ promote_to_staging() {
     generate_ai_prompt "dev" "origin/staging"
     
     # [FIX] Inicializar variable para evitar error 'unbound variable' en strict mode
-    local tmp_notes=""
     tmp_notes="$(mktemp -t release-notes.XXXXXX.md)"
     trap 'rm -f "$tmp_notes"' EXIT
     
@@ -363,7 +367,6 @@ promote_to_prod() {
     generate_ai_prompt "staging" "origin/main"
     
     # [FIX] Inicializar variable para evitar error 'unbound variable' en strict mode
-    local tmp_notes=""
     tmp_notes="$(mktemp -t release-notes.XXXXXX.md)"
     trap 'rm -f "$tmp_notes"' EXIT
     
@@ -444,12 +447,12 @@ case "$TARGET_ENV" in
     staging)   promote_to_staging ;;
     prod)      promote_to_prod ;;
     sync)      promote_sync_all ;;
-    dev-update) promote_dev_update_squash "${2:-}" ;;
+    dev-update|feature/dev-update) promote_dev_update_squash "${2:-}" ;;
     hotfix)    create_hotfix ;;
     hotfix-finish) finish_hotfix ;;
     *) 
-        echo "Uso: git promote [dev | staging | prod | sync | dev-update | hotfix]"
-        echo "  - dev-update: aplasta (squash) una rama dentro de feature/dev-update (+ opción de borrar rama)"
+        echo "Uso: git promote [dev | staging | prod | sync | feature/dev-update | hotfix]"
+        echo "  - feature/dev-update: aplasta (squash) una rama dentro de feature/dev-update (+ opción de borrar rama)"
         exit 1
         ;;
 esac
