@@ -299,7 +299,7 @@ promote_to_staging() {
     log_info "🔍 Comparando Dev -> Staging"
     generate_ai_prompt "dev" "origin/staging"
     
-    # [SOLUCION 1] Inicializar variable para evitar error 'unbound variable' con set -u
+    # [FIX] Inicializar variable para evitar error 'unbound variable' en strict mode
     local tmp_notes=""
     tmp_notes="$(mktemp -t release-notes.XXXXXX.md)"
     trap 'rm -f "$tmp_notes"' EXIT
@@ -307,21 +307,33 @@ promote_to_staging() {
     capture_release_notes "$tmp_notes"
     [[ ! -s "$tmp_notes" ]] && { log_error "Notas vacías."; exit 1; }
     
-    # [SOLUCION 2] Leer VERSION explícita del repositorio (si existe)
+    # 1. Obtener versión base desde archivo VERSION (fuente de verdad)
     local version_file="${SCRIPT_DIR}/../VERSION"
     local base_ver
     if [[ -f "$version_file" ]]; then
         base_ver=$(cat "$version_file" | tr -d '[:space:]')
-        log_info "📄 Versión detectada desde archivo VERSION: $base_ver"
+        log_info "📄 Versión actual en archivo: $base_ver"
     else
-        base_ver=$(get_current_version)
-        log_info "🤖 Versión detectada (automática): $base_ver"
+        base_ver=$(get_current_version) # Fallback
     fi
 
-    local rc_num=$(next_rc_number "$base_ver")
-    local suggested_tag="v${base_ver}-rc${rc_num}"
+    # 2. Calcular SIGUIENTE versión basada en commits (feat/fix/etc)
+    #    Requiere que lib/release-flow.sh tenga 'calculate_next_version'
+    local next_ver="$base_ver"
+    if command -v calculate_next_version >/dev/null; then
+        next_ver=$(calculate_next_version "$base_ver")
+        if [[ "$next_ver" != "$base_ver" ]]; then
+            log_info "🧠 Cálculo automático: $base_ver -> $next_ver (según commits)"
+        else
+            log_info "🧠 Cálculo automático: Sin cambios mayores detectados."
+        fi
+    fi
+
+    # 3. Calcular RC sobre la versión objetivo
+    local rc_num=$(next_rc_number "$next_ver")
+    local suggested_tag="v${next_ver}-rc${rc_num}"
     
-    # [SOLUCION 3] Opción de input manual
+    # 4. Opción de Override Manual
     echo
     log_info "🔖 Tag sugerido: $suggested_tag"
     local rc_tag=""
@@ -329,6 +341,7 @@ promote_to_staging() {
     rc_tag="${rc_tag:-$suggested_tag}"
 
     prepend_release_notes_header "$tmp_notes" "Release Notes - ${rc_tag} (Staging)"
+    
     if ! ask_yes_no "¿Desplegar a STAGING con tag $rc_tag?"; then exit 0; fi
     ensure_clean_git
     update_branch_from_remote "staging"
@@ -349,7 +362,7 @@ promote_to_prod() {
     log_info "🚀 PROMOCIÓN A PRODUCCIÓN"
     generate_ai_prompt "staging" "origin/main"
     
-    # [SOLUCION 1] Inicializar variable para evitar error 'unbound variable' con set -u
+    # [FIX] Inicializar variable para evitar error 'unbound variable' en strict mode
     local tmp_notes=""
     tmp_notes="$(mktemp -t release-notes.XXXXXX.md)"
     trap 'rm -f "$tmp_notes"' EXIT
@@ -357,19 +370,24 @@ promote_to_prod() {
     capture_release_notes "$tmp_notes"
     [[ ! -s "$tmp_notes" ]] && { log_error "Notas vacías."; exit 1; }
     
-    # [SOLUCION 2] Leer VERSION explícita del repositorio
+    # 1. Obtener versión base desde archivo
     local version_file="${SCRIPT_DIR}/../VERSION"
     local base_ver
     if [[ -f "$version_file" ]]; then
         base_ver=$(cat "$version_file" | tr -d '[:space:]')
-        log_info "📄 Versión detectada desde archivo VERSION: $base_ver"
     else
         base_ver=$(get_current_version)
     fi
 
-    local suggested_tag="v${base_ver}"
+    # 2. Calcular versión sugerida (generalmente en prod es la base, pero verificamos)
+    local next_ver="$base_ver"
+    if command -v calculate_next_version >/dev/null; then
+        next_ver=$(calculate_next_version "$base_ver")
+    fi
+
+    local suggested_tag="v${next_ver}"
     
-    # [SOLUCION 3] Opción de input manual
+    # 3. Opción de Override Manual
     echo
     log_info "🔖 Tag sugerido: $suggested_tag"
     local release_tag=""
