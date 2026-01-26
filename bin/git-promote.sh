@@ -298,15 +298,38 @@ promote_to_staging() {
     fi
     log_info "🔍 Comparando Dev -> Staging"
     generate_ai_prompt "dev" "origin/staging"
-    local tmp_notes
+
+    # [FIX] Inicializar variable para evitar error 'unbound variable' en strict mode
+    local tmp_notes=""
     tmp_notes="$(mktemp -t release-notes.XXXXXX.md)"
     trap 'rm -f "$tmp_notes"' EXIT
+    
     capture_release_notes "$tmp_notes"
     [[ ! -s "$tmp_notes" ]] && { log_error "Notas vacías."; exit 1; }
-    local base_ver=$(get_current_version)
+    
+    # [FIX] Leer VERSION explícita del repositorio (si existe)
+    local version_file="${SCRIPT_DIR}/../VERSION"
+    local base_ver
+    if [[ -f "$version_file" ]]; then
+        base_ver=$(cat "$version_file" | tr -d '[:space:]')
+        log_info "📄 Versión detectada desde archivo VERSION: $base_ver"
+    else
+        base_ver=$(get_current_version)
+        log_info "🤖 Versión detectada (automática): $base_ver"
+    fi
+
     local rc_num=$(next_rc_number "$base_ver")
-    local rc_tag="v${base_ver}-rc${rc_num}"
+    local suggested_tag="v${base_ver}-rc${rc_num}"
+    
+    # [FIX] Opción de input manual
+    echo
+    log_info "🔖 Tag sugerido: $suggested_tag"
+    local rc_tag=""
+    read -r -p "Presiona ENTER para usar '$suggested_tag' o escribe tu versión manual: " rc_tag
+    rc_tag="${rc_tag:-$suggested_tag}"
+
     prepend_release_notes_header "$tmp_notes" "Release Notes - ${rc_tag} (Staging)"
+    
     if ! ask_yes_no "¿Desplegar a STAGING con tag $rc_tag?"; then exit 0; fi
     ensure_clean_git
     update_branch_from_remote "staging"
@@ -326,13 +349,34 @@ promote_to_prod() {
     fi
     log_info "🚀 PROMOCIÓN A PRODUCCIÓN"
     generate_ai_prompt "staging" "origin/main"
-    local tmp_notes
+    
+    # [FIX] Inicializar variable para evitar error 'unbound variable' en strict mode
+    local tmp_notes=""
     tmp_notes="$(mktemp -t release-notes.XXXXXX.md)"
     trap 'rm -f "$tmp_notes"' EXIT
+    
     capture_release_notes "$tmp_notes"
     [[ ! -s "$tmp_notes" ]] && { log_error "Notas vacías."; exit 1; }
-    local base_ver=$(get_current_version)
-    local release_tag="v${base_ver}"
+    
+    # [FIX] Leer VERSION explícita del repositorio
+    local version_file="${SCRIPT_DIR}/../VERSION"
+    local base_ver
+    if [[ -f "$version_file" ]]; then
+        base_ver=$(cat "$version_file" | tr -d '[:space:]')
+        log_info "📄 Versión detectada desde archivo VERSION: $base_ver"
+    else
+        base_ver=$(get_current_version)
+    fi
+
+    local suggested_tag="v${base_ver}"
+    
+    # [FIX] Opción de input manual
+    echo
+    log_info "🔖 Tag sugerido: $suggested_tag"
+    local release_tag=""
+    read -r -p "Presiona ENTER para usar '$suggested_tag' o escribe tu versión manual: " release_tag
+    release_tag="${release_tag:-$suggested_tag}"
+
     prepend_release_notes_header "$tmp_notes" "Release Notes - ${release_tag} (Producción)"
     if ! ask_yes_no "¿Confirmar pase a Producción ($release_tag)?"; then exit 0; fi
     ensure_clean_git
