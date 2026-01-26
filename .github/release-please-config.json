@@ -4,7 +4,10 @@
     ".": {
       "release-type": "simple",
       "package-name": "erd-devtools",
-      "version-file": "lib/core/version.sh",
+      "version-file": "VERSION",
+      "extra-files": [
+        "lib/core/version.sh"
+      ],
       "changelog-path": "CHANGELOG.md",
       "include-v-in-tag": true
     }
