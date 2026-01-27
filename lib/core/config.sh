@@ -13,6 +13,18 @@ if [ -z "$PROJECT_ROOT" ]; then
     PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 fi
 
+# --- FASE 1 (NUEVO): ROOTS CANÓNICOS PARA VERSIONADO Y ORQUESTACIÓN ---
+# Objetivo:
+# - REPO_ROOT: raíz del repo actual (si estás en un submódulo, es la raíz del submódulo).
+# - WORKSPACE_ROOT: raíz del superproyecto (si existe); si no, vacío.
+# - PROJECT_ROOT (compat): se mantiene como “workspace” cuando hay superproyecto, o repo root si no.
+#
+# Esto permite que los scripts de versionado NO lean VERSION desde .devtools embebido por error,
+# y en su lugar usen siempre $REPO_ROOT/VERSION como fuente de verdad del repo actual.
+export REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+export WORKSPACE_ROOT="$(git rev-parse --show-superproject-working-tree 2>/dev/null || echo "")"
+export PROJECT_ROOT
+
 # Rutas de configuración con prioridad:
 # 1. Específica del toolset (.devtools)
 # 2. Local del repositorio (raíz)

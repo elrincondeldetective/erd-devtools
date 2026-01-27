@@ -19,6 +19,40 @@ source "${LIB_DIR}/release-flow.sh" # Versioning
 source "${LIB_DIR}/ssh-ident.sh"   # <--- AGREGADO: Gestión de Identidad
 
 # ==============================================================================
+# FASE 1 (NUEVO): NORMALIZACIÓN ROBUSTA DE VERSION FILE (repo actual)
+# ==============================================================================
+# Objetivo:
+# - Garantizar que siempre leemos VERSION desde el repo actual, NO desde .devtools embebido.
+# - Mantener backward-compat: si REPO_ROOT no existe por algún motivo, lo inferimos.
+# - Permitir que GitHub (release-please) sea el único que “decide” la versión (local no recalcula).
+if [[ -z "${REPO_ROOT:-}" ]]; then
+    export REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+fi
+
+resolve_repo_version_file() {
+    # Preferimos VERSION en la raíz del repo actual
+    if [[ -n "${REPO_ROOT:-}" && -f "${REPO_ROOT}/VERSION" ]]; then
+        echo "${REPO_ROOT}/VERSION"
+        return 0
+    fi
+
+    # Backward-compat (histórico): relativo a .devtools/bin (puede apuntar a .devtools/VERSION)
+    if [[ -f "${SCRIPT_DIR}/../VERSION" ]]; then
+        echo "${SCRIPT_DIR}/../VERSION"
+        return 0
+    fi
+
+    # Fallback: relativo al cwd
+    if [[ -f "VERSION" ]]; then
+        echo "VERSION"
+        return 0
+    fi
+
+    # Fallback final
+    echo "VERSION"
+}
+
+# ==============================================================================
 # 2. SETUP DE IDENTIDAD (CRÍTICO PARA PULL/PUSH)
 # ==============================================================================
 # Si no estamos en modo simple, cargamos las llaves SSH antes de empezar
@@ -362,6 +396,15 @@ promote_to_staging() {
     
     # 1. Obtener versión base desde archivo VERSION (fuente de verdad)
     local version_file="${SCRIPT_DIR}/../VERSION"
+
+    # --- FASE 1 (NUEVO): Preferir VERSION del repo actual (REPO_ROOT/VERSION) ---
+    # Esto evita leer .devtools/VERSION cuando .devtools está embebido en apps/submódulos.
+    local __resolved_version_file
+    __resolved_version_file="$(resolve_repo_version_file)"
+    if [[ -n "${__resolved_version_file:-}" ]]; then
+        version_file="${__resolved_version_file}"
+    fi
+
     local base_ver
     if [[ -f "$version_file" ]]; then
         base_ver=$(cat "$version_file" | tr -d '[:space:]')
@@ -373,13 +416,22 @@ promote_to_staging() {
     # 2. Calcular SIGUIENTE versión basada en commits (feat/fix/etc)
     #    Requiere que lib/release-flow.sh tenga 'calculate_next_version'
     local next_ver="$base_ver"
-    if command -v calculate_next_version >/dev/null; then
-        next_ver=$(calculate_next_version "$base_ver")
-        if [[ "$next_ver" != "$base_ver" ]]; then
-            log_info "🧠 Cálculo automático: $base_ver -> $next_ver (según commits)"
-        else
-            log_info "🧠 Cálculo automático: Sin cambios mayores detectados."
+
+    # --- FASE 1 (NUEVO): GitHub es el dueño de la versión ---
+    # Por defecto NO recalculamos versión en local (evita drift con release-please).
+    # Si algún día quieres “solo sugerir” basado en commits, activa:
+    #   DEVTOOLS_SUGGEST_VERSION_FROM_COMMITS=1
+    if [[ "${DEVTOOLS_SUGGEST_VERSION_FROM_COMMITS:-0}" == "1" ]]; then
+        if command -v calculate_next_version >/dev/null; then
+            next_ver=$(calculate_next_version "$base_ver")
+            if [[ "$next_ver" != "$base_ver" ]]; then
+                log_info "🧠 Cálculo automático: $base_ver -> $next_ver (según commits)"
+            else
+                log_info "🧠 Cálculo automático: Sin cambios mayores detectados."
+            fi
         fi
+    else
+        log_info "🤖 Versionado gestionado por GitHub: usando $base_ver desde VERSION (sin recalcular)."
     fi
 
     # 3. Calcular RC sobre la versión objetivo
@@ -424,6 +476,14 @@ promote_to_prod() {
     
     # 1. Obtener versión base desde archivo
     local version_file="${SCRIPT_DIR}/../VERSION"
+
+    # --- FASE 1 (NUEVO): Preferir VERSION del repo actual (REPO_ROOT/VERSION) ---
+    local __resolved_version_file
+    __resolved_version_file="$(resolve_repo_version_file)"
+    if [[ -n "${__resolved_version_file:-}" ]]; then
+        version_file="${__resolved_version_file}"
+    fi
+
     local base_ver
     if [[ -f "$version_file" ]]; then
         base_ver=$(cat "$version_file" | tr -d '[:space:]')
@@ -433,8 +493,15 @@ promote_to_prod() {
 
     # 2. Calcular versión sugerida (generalmente en prod es la base, pero verificamos)
     local next_ver="$base_ver"
-    if command -v calculate_next_version >/dev/null; then
-        next_ver=$(calculate_next_version "$base_ver")
+
+    # --- FASE 1 (NUEVO): GitHub es el dueño de la versión ---
+    # Por defecto NO recalculamos versión en local (evita drift con release-please).
+    if [[ "${DEVTOOLS_SUGGEST_VERSION_FROM_COMMITS:-0}" == "1" ]]; then
+        if command -v calculate_next_version >/dev/null; then
+            next_ver=$(calculate_next_version "$base_ver")
+        fi
+    else
+        log_info "🤖 Versionado gestionado por GitHub: usando $base_ver desde VERSION (sin recalcular)."
     fi
 
     local suggested_tag="v${next_ver}"

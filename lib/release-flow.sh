@@ -16,6 +16,38 @@ else
 fi
 
 # ==============================================================================
+# FASE 1 (NUEVO): NORMALIZACIÓN ROBUSTA DE ROOT + VERSION_FILE
+# ==============================================================================
+# Objetivo:
+# - Evitar depender de SCRIPT_DIR heredado del caller (frágil).
+# - Usar siempre el VERSION del repo actual (REPO_ROOT/VERSION) cuando exista.
+# - Mantener backward-compat: si REPO_ROOT no está disponible, inferirlo.
+#
+# REPO_ROOT debe venir exportado desde core/config.sh, pero lo inferimos si falta.
+# Nota: NO eliminamos la lógica previa; solo la hacemos "source of truth" al final.
+if [[ -z "${REPO_ROOT:-}" ]]; then
+    export REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+fi
+
+# Directorio real de este archivo (no del script que lo sourcea)
+__THIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Si existe el VERSION en la raíz del repo actual, es la fuente de verdad.
+if [[ -f "${REPO_ROOT}/VERSION" ]]; then
+    VERSION_FILE="${REPO_ROOT}/VERSION"
+# Fallback: si el repo está embebido en un superrepo y por alguna razón REPO_ROOT no apunta bien,
+# intentamos con la lógica histórica relativa al directorio de ESTE archivo.
+elif [[ -f "${__THIS_DIR}/../../VERSION" ]]; then
+    VERSION_FILE="${__THIS_DIR}/../../VERSION"
+# Fallback: ruta relativa al cwd (comportamiento histórico)
+elif [[ -f "VERSION" ]]; then
+    VERSION_FILE="VERSION"
+else
+    # Fallback final si no encuentra nada
+    VERSION_FILE="VERSION"
+fi
+
+# ==============================================================================
 # 1. HELPERS DE VERSIONADO (SEMVER / RC)
 # ==============================================================================
 
