@@ -53,6 +53,21 @@ resolve_repo_version_file() {
 }
 
 # ==============================================================================
+# FIX (NUEVO): AUTO-RESYNC DE SUBMÓDULOS ANTES DE VALIDAR "DIRTY"
+# ==============================================================================
+# Objetivo:
+# - Evitar el error recurrente: ".devtools (new commits)" => ensure_clean_git falla.
+# - Forzar que los submódulos queden exactamente en el SHA que el repo referencia (gitlink),
+#   antes de validar/promover.
+resync_submodules_hard() {
+    # Solo aplica si el repo tiene submódulos.
+    if [[ -f ".gitmodules" ]]; then
+        git submodule sync --recursive >/dev/null 2>&1 || true
+        git submodule update --init --recursive >/dev/null 2>&1 || true
+    fi
+}
+
+# ==============================================================================
 # 2. SETUP DE IDENTIDAD (CRÍTICO PARA PULL/PUSH)
 # ==============================================================================
 # Si no estamos en modo simple, cargamos las llaves SSH antes de empezar
@@ -87,6 +102,7 @@ promote_sync_all() {
         echo
         
         if ask_yes_no "¿Quieres FUSIONAR '$current_branch' dentro de '$canonical_branch' y sincronizar todo?"; then
+            resync_submodules_hard
             ensure_clean_git
             log_info "🧲 Absorbiendo '$current_branch' en '$canonical_branch'..."
             
@@ -123,6 +139,7 @@ promote_sync_all() {
     log_info "   Flujo: $source_branch -> dev -> staging -> main"
     echo
 
+    resync_submodules_hard
     ensure_clean_git
 
     # Asegurar fuente actualizada
@@ -197,6 +214,7 @@ promote_dev_update_squash() {
         exit 1
     fi
 
+    resync_submodules_hard
     ensure_clean_git
 
     # Traer refs frescas
@@ -367,7 +385,10 @@ promote_to_dev() {
     fi
     log_warn "🚧 PROMOCIÓN A DEV (Destructiva)"
     if ! ask_yes_no "¿Aplastar 'dev' con '$current_branch'?"; then exit 0; fi
+
+    resync_submodules_hard
     ensure_clean_git
+
     update_branch_from_remote "dev" "origin" "true"
     git reset --hard "$current_branch"
     git push origin dev --force
@@ -378,6 +399,7 @@ promote_to_dev() {
 }
 
 promote_to_staging() {
+    resync_submodules_hard
     ensure_clean_git
     local current=$(git branch --show-current)
     if [[ "$current" != "dev" ]]; then
@@ -448,7 +470,10 @@ promote_to_staging() {
     prepend_release_notes_header "$tmp_notes" "Release Notes - ${rc_tag} (Staging)"
     
     if ! ask_yes_no "¿Desplegar a STAGING con tag $rc_tag?"; then exit 0; fi
+
+    resync_submodules_hard
     ensure_clean_git
+
     update_branch_from_remote "staging"
     git merge --ff-only dev
     git tag -a "$rc_tag" -F "$tmp_notes"
@@ -458,6 +483,7 @@ promote_to_staging() {
 }
 
 promote_to_prod() {
+    resync_submodules_hard
     ensure_clean_git
     local current=$(git branch --show-current)
     if [[ "$current" != "staging" ]]; then
@@ -515,7 +541,10 @@ promote_to_prod() {
 
     prepend_release_notes_header "$tmp_notes" "Release Notes - ${release_tag} (Producción)"
     if ! ask_yes_no "¿Confirmar pase a Producción ($release_tag)?"; then exit 0; fi
+
+    resync_submodules_hard
     ensure_clean_git
+
     update_branch_from_remote "main"
     git merge --ff-only staging
     if git rev-parse "$release_tag" >/dev/null 2>&1; then
@@ -532,7 +561,10 @@ create_hotfix() {
     log_warn "🔥 HOTFIX MODE"
     read -r -p "Nombre del hotfix: " hf_name
     local hf_branch="hotfix/$hf_name"
+
+    resync_submodules_hard
     ensure_clean_git
+
     update_branch_from_remote "main"
     git checkout -b "$hf_branch"
     log_success "✅ Rama hotfix creada: $hf_branch"
@@ -541,7 +573,10 @@ create_hotfix() {
 finish_hotfix() {
     local current=$(git branch --show-current)
     [[ "$current" != hotfix/* ]] && { log_error "No estás en una rama hotfix."; exit 1; }
+
+    resync_submodules_hard
     ensure_clean_git
+
     log_warn "🩹 Finalizando Hotfix..."
     update_branch_from_remote "main"
     git merge --no-ff "$current" -m "Merge hotfix: $current"
