@@ -15,15 +15,6 @@
 # - promote/golden-sha.sh
 # - promote/gitops-integration.sh
 
-# [FIX] Helper visual para evitar error "orden no encontrada"
-banner() {
-    echo ""
-    echo "=============================================================================="
-    echo "   $1"
-    echo "=============================================================================="
-    echo ""
-}
-
 # [FIX] Solución de raíz: re-sincronizar submódulos para evitar estados dirty falsos
 resync_submodules_hard() {
   git submodule sync --recursive >/dev/null 2>&1 || true
@@ -223,6 +214,7 @@ wait_for_workflow_success_on_ref_or_sha_or_die() {
         elapsed=$((elapsed + interval))
     done
 }
+
 
 # ==============================================================================
 # 1. SMART SYNC (Con Auto-Absorción)
@@ -587,48 +579,171 @@ promote_to_staging() {
     # ==============================================================================
     # FASE 2 (CORREGIDA): el bot crea RC tag si existe workflow tag-rc-on-staging
     # ==============================================================================
+    local use_remote_tagger=0
+    
+    # Verificamos si existe el workflow en GitHub
+    if ! should_tag_locally_for_staging; then
+        echo
+        log_info "🤖 Se detectó automatización en GitHub (tag-rc-on-staging)."
+        echo "   El sistema puede calcular el siguiente RC automáticamente."
+        echo
+        echo "   Opciones:"
+        echo "     [Y] Sí (Auto):    Solo empujar cambios. GitHub crea el tag (vX.Y.Z-rcN)."
+        echo "     [N] No (Manual): Quiero definir el tag yo mismo ahora."
+        echo
+        
+        if ask_yes_no "¿Delegar el tagging a GitHub?"; then
+            use_remote_tagger=1
+        else
+            log_warn "🖐️  Modo Manual activado: Tú tienes el control."
+            use_remote_tagger=0
+        fi
+    fi
+
+    # --- CAMINO A: AUTOMÁTICO (Solo Push) ---
+    if [[ "$use_remote_tagger" == "1" ]]; then
+        ensure_clean_git
+        ensure_local_tracking_branch "staging" "origin" || { log_error "No pude preparar la rama 'staging' desde 'origin/staging'."; exit 1; }
+        update_branch_from_remote "staging"
+        git merge --ff-only dev
+
+        # Validar SHA
+        local staging_sha dev_sha
+        staging_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+        dev_sha="$(git rev-parse dev 2>/dev/null || true)"
+        if [[ -n "${dev_sha:-}" && -n "${staging_sha:-}" && "$staging_sha" != "$dev_sha" ]]; then
+            log_error "FF-only merge no resultó en el mismo SHA (staging != dev). Abortando."
+            exit 1
+        fi
+
+        git push origin staging
+        log_success "✅ Staging actualizado."
+
+        # Esperar RC tag + build del tag (solo si este repo tiene el tagger)
+        if repo_has_workflow_file "tag-rc-on-staging"; then
+            local ver
+            ver="$(__read_repo_version 2>/dev/null || true)"
+            if [[ -n "${ver:-}" ]]; then
+                local rc_pattern="^v${ver}-rc[0-9]+$"
+                local rc_tag
+                rc_tag="$(wait_for_tag_on_sha_or_die "$staging_sha" "$rc_pattern" "RC tag")"
+                if repo_has_workflow_file "build-push"; then
+                    wait_for_workflow_success_on_ref_or_sha_or_die "build-push.yaml" "$staging_sha" "$rc_tag" "Build and Push (tag RC)"
+                fi
+            fi
+        fi
+
+        # ==============================================================================
+        # FASE 5: LIMPIEZA DE RAMAS DEL BOT (Auto)
+        # ==============================================================================
+        cleanup_bot_branches auto
+
+        # Disparar GitOps
+        local changed_paths
+        changed_paths="${__gitops_changed_paths:-$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)}"
+        maybe_trigger_gitops_update "staging" "$staging_sha" "$changed_paths"
+
+        return 0
+    fi
+    
+    # --- CAMINO B: MANUAL (El código original continúa aquí abajo) ---
+    
+    local tmp_notes
+    tmp_notes="$(mktemp -t release-notes.XXXXXX.md)"
+    trap 'rm -f "$tmp_notes"' EXIT
+    
+    capture_release_notes "$tmp_notes"
+    [[ ! -s "$tmp_notes" ]] && { log_error "Notas vacías."; exit 1; }
+    
+    # 1. Obtener versión base desde archivo VERSION (fuente de verdad)
+    local version_file
+    version_file="$(resolve_repo_version_file)"
+
+    local base_ver
+    if [[ -f "$version_file" ]]; then
+        base_ver=$(cat "$version_file" | tr -d '[:space:]')
+        log_info "📄 Versión actual en archivo: $base_ver"
+    else
+        base_ver=$(get_current_version) # Fallback
+    fi
+
+    # 2. Calcular SIGUIENTE versión basada en commits
+    local next_ver="$base_ver"
+    if [[ "${DEVTOOLS_SUGGEST_VERSION_FROM_COMMITS:-0}" == "1" ]]; then
+        if command -v calculate_next_version >/dev/null; then
+            next_ver=$(calculate_next_version "$base_ver")
+            if [[ "$next_ver" != "$base_ver" ]]; then
+                log_info "🧠 Cálculo automático: $base_ver -> $next_ver (según commits)"
+            else
+                log_info "🧠 Cálculo automático: Sin cambios mayores detectados."
+            fi
+        fi
+    else
+        log_info "🤖 Versionado gestionado por GitHub: usando $base_ver desde VERSION (sin recalcular)."
+    fi
+
+    # 3. Calcular RC sobre la versión objetivo
+    local rc_num
+    rc_num="$(next_rc_number "$next_ver")"
+    local suggested_tag="v${next_ver}-rc${rc_num}"
+    
+    # 4. Opción de Override Manual
+    echo
+    log_info "🔖 Tag sugerido: $suggested_tag"
+    local rc_tag=""
+    read -r -p "Presiona ENTER para usar '$suggested_tag' o escribe tu versión manual: " rc_tag
+    rc_tag="${rc_tag:-$suggested_tag}"
+
+    prepend_release_notes_header "$tmp_notes" "Release Notes - ${rc_tag} (Staging)"
+    
+    if ! ask_yes_no "¿Desplegar a STAGING con tag $rc_tag?"; then 
+        # Si el usuario cancela, limpiamos el trap para no borrar archivos random
+        rm -f "$tmp_notes"
+        trap - EXIT
+        exit 0
+    fi
+
     ensure_clean_git
     ensure_local_tracking_branch "staging" "origin" || { log_error "No pude preparar la rama 'staging' desde 'origin/staging'."; exit 1; }
     update_branch_from_remote "staging"
     git merge --ff-only dev
 
-    # Validar SHA
+    # ==============================================================================
+    # FASE 3: Asegurar mismo SHA (staging == dev == golden)
+    # ==============================================================================
     local staging_sha dev_sha
     staging_sha="$(git rev-parse HEAD 2>/dev/null || true)"
     dev_sha="$(git rev-parse dev 2>/dev/null || true)"
     if [[ -n "${dev_sha:-}" && -n "${staging_sha:-}" && "$staging_sha" != "$dev_sha" ]]; then
+        # Limpieza antes de salir por error
+        rm -f "$tmp_notes"
+        trap - EXIT
         log_error "FF-only merge no resultó en el mismo SHA (staging != dev). Abortando."
+        echo "   dev    : $dev_sha"
+        echo "   staging: $staging_sha"
         exit 1
     fi
 
+    git tag -a "$rc_tag" -F "$tmp_notes"
     git push origin staging
-    log_success "✅ Staging actualizado."
+    git push origin "$rc_tag"
+    log_success "✅ Staging actualizado ($rc_tag)."
 
-    # Esperar RC tag + build del tag (solo si este repo tiene el tagger)
-    if repo_has_workflow_file "tag-rc-on-staging"; then
-        local ver
-        ver="$(__read_repo_version 2>/dev/null || true)"
-        if [[ -n "${ver:-}" ]]; then
-            local rc_pattern="^v${ver}-rc[0-9]+$"
-            local rc_tag
-            rc_tag="$(wait_for_tag_on_sha_or_die "$staging_sha" "$rc_pattern" "RC tag")"
-            if repo_has_workflow_file "build-push"; then
-                wait_for_workflow_success_on_ref_or_sha_or_die "build-push.yaml" "$staging_sha" "$rc_tag" "Build and Push (tag RC)"
-            fi
-        fi
-    fi
+    # [FIX] CRASH FIX: Limpiamos archivo y quitamos trap ANTES de que la variable local muera
+    rm -f "$tmp_notes"
+    trap - EXIT
 
     # ==============================================================================
-    # FASE 5: LIMPIEZA DE RAMAS DEL BOT (Auto)
+    # FASE 5: LIMPIEZA DE RAMAS DEL BOT (Manual)
     # ==============================================================================
     cleanup_bot_branches auto
 
-    # Disparar GitOps
+    # ==============================================================================
+    # FASE 4: Disparar update-gitops-manifests para STAGING
+    # ==============================================================================
     local changed_paths
     changed_paths="${__gitops_changed_paths:-$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)}"
     maybe_trigger_gitops_update "staging" "$staging_sha" "$changed_paths"
-
-    return 0
 }
 
 # ==============================================================================
