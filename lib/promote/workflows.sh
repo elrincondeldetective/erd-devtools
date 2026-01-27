@@ -21,6 +21,39 @@ resync_submodules_hard() {
   git submodule update --init --recursive >/dev/null 2>&1 || true
 }
 
+# Helper para limpieza de ramas de release-please (NUEVO)
+cleanup_bot_branches() {
+    log_info "🧹 Buscando ramas de 'release-please' fusionadas para limpiar..."
+    
+    # Fetch para asegurar que la lista remota está fresca
+    git fetch origin --prune
+
+    # Buscamos ramas remotas que cumplan:
+    # 1. Estén totalmente fusionadas en HEAD (staging/dev)
+    # 2. Coincidan con el patrón del bot
+    local branches_to_clean
+    branches_to_clean=$(git branch -r --merged HEAD | grep 'origin/release-please--' | sed 's/origin\///' || true)
+
+    if [[ -z "$branches_to_clean" ]]; then
+        log_info "✨ No hay ramas de bot pendientes de limpieza."
+        return 0
+    fi
+
+    echo "🔍 Se encontraron las siguientes ramas de bot fusionadas:"
+    echo "$branches_to_clean"
+    echo
+
+    if ask_yes_no "¿Eliminar estas ramas remotas para mantener la limpieza?"; then
+        for branch in $branches_to_clean; do
+            log_info "🔥 Eliminando remote: $branch"
+            git push origin --delete "$branch" || log_warn "No se pudo borrar $branch (tal vez ya no existe)."
+        done
+        log_success "🧹 Limpieza completada."
+    else
+        log_warn "Omitiendo limpieza de ramas."
+    fi
+}
+
 # ==============================================================================
 # 1. SMART SYNC (Con Auto-Absorción)
 # ==============================================================================
@@ -415,8 +448,27 @@ promote_to_staging() {
     # ==============================================================================
     assert_golden_sha_matches_head_or_die "DEV (antes de promover a STAGING)" || exit 1
 
+    # Capturamos SHA actual para el Build Inmutable
+    local golden_sha
+    golden_sha="$(git rev-parse HEAD)"
+    local short_sha="${golden_sha:0:7}"
+
     log_info "🔍 Comparando Dev -> Staging"
     generate_ai_prompt "dev" "origin/staging"
+
+    # ==============================================================================
+    # FASE EXTRA: BUILD LOCAL DEL GOLDEN SHA (Para garantizar el artefacto)
+    # ==============================================================================
+    if [[ -f "${REPO_ROOT}/Taskfile.yaml" ]]; then
+        echo
+        log_info "🏗️  Generando BUILD local para asegurar Golden SHA (sha-$short_sha)..."
+        
+        # Ejecutamos el build específicamente para este SHA
+        (cd "${REPO_ROOT}" && task app:build APP=pmbok-backend TAG="sha-$short_sha") || exit 1
+        (cd "${REPO_ROOT}" && task app:build APP=pmbok-frontend TAG="sha-$short_sha") || exit 1
+        
+        log_success "✅ Builds generados con tag: sha-$short_sha"
+    fi
 
     # ==============================================================================
     # FASE 2 (HÍBRIDA): DECISIÓN MANUAL VS AUTOMÁTICA
@@ -459,6 +511,11 @@ promote_to_staging() {
 
         git push origin staging
         log_success "✅ Staging actualizado. (GitHub Actions creará el tag RC en breve)."
+
+        # ==============================================================================
+        # FASE 5: LIMPIEZA DE RAMAS DEL BOT (Auto)
+        # ==============================================================================
+        cleanup_bot_branches
 
         # Disparar GitOps
         local changed_paths
@@ -540,6 +597,11 @@ promote_to_staging() {
     git push origin staging
     git push origin "$rc_tag"
     log_success "✅ Staging actualizado ($rc_tag)."
+
+    # ==============================================================================
+    # FASE 5: LIMPIEZA DE RAMAS DEL BOT (Manual)
+    # ==============================================================================
+    cleanup_bot_branches
 
     # ==============================================================================
     # FASE 4: Disparar update-gitops-manifests para STAGING
