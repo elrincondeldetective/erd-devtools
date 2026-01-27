@@ -53,209 +53,18 @@ resolve_repo_version_file() {
 }
 
 # ==============================================================================
-# FASE 2 (NUEVO): UN SOLO DUEÑO DE TAGS (LOCAL vs GITHUB)
+# FIX (NUEVO): AUTO-RESYNC DE SUBMÓDULOS ANTES DE VALIDAR "DIRTY"
 # ==============================================================================
 # Objetivo:
-# - Evitar duplicados/carreras cuando el repo ya tiene workflows que crean tags.
-# - Regla:
-#   - Si el repo TIENE workflows de tagging (tag-rc-on-staging / tag-final-on-main),
-#     entonces GitHub es el dueño del tag y el promote local NO crea tags.
-#   - Si no existen, el promote local sigue creando tags (comportamiento histórico).
-#
-# Overrides:
-# - DEVTOOLS_FORCE_LOCAL_TAGS=1  -> fuerza tag local aunque existan workflows.
-# - DEVTOOLS_DISABLE_GH_TAGGER=1 -> equivalente (compat semántica).
-repo_has_workflow_file() {
-    local wf_name="$1"
-    local wf_dir="${REPO_ROOT}/.github/workflows"
-    [[ -f "${wf_dir}/${wf_name}.yaml" || -f "${wf_dir}/${wf_name}.yml" ]]
-}
-
-should_tag_locally_for_staging() {
-    # Force local behavior if explicitly requested
-    if [[ "${DEVTOOLS_FORCE_LOCAL_TAGS:-0}" == "1" || "${DEVTOOLS_DISABLE_GH_TAGGER:-0}" == "1" ]]; then
-        return 0
+# - Evitar el error recurrente: ".devtools (new commits)" => ensure_clean_git falla.
+# - Forzar que los submódulos queden exactamente en el SHA que el repo referencia (gitlink),
+#   antes de validar/promover.
+resync_submodules_hard() {
+    # Solo aplica si el repo tiene submódulos.
+    if [[ -f ".gitmodules" ]]; then
+        git submodule sync --recursive >/dev/null 2>&1 || true
+        git submodule update --init --recursive >/dev/null 2>&1 || true
     fi
-
-    # If GitHub tagger exists, do NOT tag locally
-    if repo_has_workflow_file "tag-rc-on-staging"; then
-        return 1
-    fi
-
-    return 0
-}
-
-should_tag_locally_for_prod() {
-    # Force local behavior if explicitly requested
-    if [[ "${DEVTOOLS_FORCE_LOCAL_TAGS:-0}" == "1" || "${DEVTOOLS_DISABLE_GH_TAGGER:-0}" == "1" ]]; then
-        return 0
-    fi
-
-    # If GitHub tagger exists, do NOT tag locally
-    if repo_has_workflow_file "tag-final-on-main"; then
-        return 1
-    fi
-
-    return 0
-}
-
-# ==============================================================================
-# FASE 3 (NUEVO): GOLDEN SHA REAL (mismo SHA dev -> staging -> main)
-# ==============================================================================
-# Objetivo:
-# - Capturar y persistir el SHA “golden” que pasó checks y quedó en dev.
-# - En staging/prod, asegurar que se promueve EXACTAMENTE ese SHA (ff-only).
-#
-# Overrides:
-# - DEVTOOLS_ALLOW_GOLDEN_SHA_MISMATCH=1   -> permite continuar aunque no coincida (no recomendado).
-# - DEVTOOLS_PR_MERGE_TIMEOUT_SECONDS=900  -> timeout espera merge PR (segundos).
-# - DEVTOOLS_PR_MERGE_POLL_SECONDS=5       -> intervalo polling (segundos).
-resolve_golden_sha_file() {
-    # Preferimos dejar un rastro dentro de .devtools si existe como carpeta del repo,
-    # pero si estamos dentro del repo erd-devtools (REPO_ROOT==.devtools), usamos root.
-    if [[ -d "${REPO_ROOT}/.devtools" ]]; then
-        echo "${REPO_ROOT}/.devtools/.last_golden_sha"
-        return 0
-    fi
-    echo "${REPO_ROOT}/.last_golden_sha"
-}
-
-write_golden_sha() {
-    local sha="$1"
-    local meta="${2:-}"
-    local f
-    f="$(resolve_golden_sha_file)"
-
-    [[ -n "${sha:-}" ]] || return 1
-
-    {
-        echo "$sha"
-        [[ -n "$meta" ]] && echo "$meta"
-        echo "timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-    } > "$f" || return 1
-
-    return 0
-}
-
-read_golden_sha() {
-    local f
-    f="$(resolve_golden_sha_file)"
-    [[ -f "$f" ]] || return 1
-    head -n 1 "$f" | tr -d '[:space:]'
-}
-
-ensure_local_tracking_branch() {
-    local branch="$1"
-    local remote="${2:-origin}"
-
-    git fetch "$remote" "$branch" >/dev/null 2>&1 || true
-
-    if git show-ref --verify --quiet "refs/heads/${branch}"; then
-        return 0
-    fi
-
-    if git show-ref --verify --quiet "refs/remotes/${remote}/${branch}"; then
-        git checkout -b "$branch" "${remote}/${branch}" >/dev/null 2>&1 || return 1
-        return 0
-    fi
-
-    # Último recurso: crear la rama desde el remoto explícito si existe
-    if git rev-parse "${remote}/${branch}" >/dev/null 2>&1; then
-        git checkout -b "$branch" "${remote}/${branch}" >/dev/null 2>&1 || return 1
-        return 0
-    fi
-
-    return 1
-}
-
-wait_for_pr_merge_and_get_sha() {
-    local pr_number="$1"
-    local timeout="${DEVTOOLS_PR_MERGE_TIMEOUT_SECONDS:-900}"
-    local interval="${DEVTOOLS_PR_MERGE_POLL_SECONDS:-5}"
-    local elapsed=0
-
-    while true; do
-        # merged: true/false
-        local merged state
-        merged="$(gh pr view "$pr_number" --json merged --jq '.merged' 2>/dev/null || echo "false")"
-        state="$(gh pr view "$pr_number" --json state --jq '.state' 2>/dev/null || echo "")"
-
-        if [[ "$merged" == "true" ]]; then
-            local merge_sha
-            merge_sha="$(gh pr view "$pr_number" --json mergeCommit --jq '.mergeCommit.oid' 2>/dev/null || echo "")"
-            if [[ -n "${merge_sha:-}" && "${merge_sha:-null}" != "null" ]]; then
-                echo "$merge_sha"
-                return 0
-            fi
-            # Si está merged pero no podemos leer mergeCommit, seguimos intentando un poco.
-        else
-            # Si el PR se cerró sin merge, abortamos.
-            if [[ "$state" == "CLOSED" ]]; then
-                log_error "El PR #$pr_number está CLOSED y no fue mergeado. Abortando."
-                return 1
-            fi
-        fi
-
-        if (( elapsed >= timeout )); then
-            log_error "Timeout esperando a que el PR #$pr_number sea mergeado."
-            return 1
-        fi
-
-        sleep "$interval"
-        elapsed=$((elapsed + interval))
-    done
-}
-
-sync_branch_to_origin() {
-    local branch="$1"
-    local remote="${2:-origin}"
-
-    ensure_clean_git
-    ensure_local_tracking_branch "$branch" "$remote" || {
-        log_error "No pude preparar la rama '$branch' desde '$remote/$branch'."
-        return 1
-    }
-
-    git checkout "$branch" >/dev/null 2>&1 || return 1
-    git fetch "$remote" "$branch" >/dev/null 2>&1 || true
-    # Aseguramos que la rama local refleje EXACTAMENTE el remoto (golden truth)
-    git reset --hard "${remote}/${branch}" >/dev/null 2>&1 || true
-    return 0
-}
-
-assert_golden_sha_matches_head_or_die() {
-    local context="$1"
-    local allow="${DEVTOOLS_ALLOW_GOLDEN_SHA_MISMATCH:-0}"
-    local golden=""
-    golden="$(read_golden_sha 2>/dev/null || true)"
-
-    if [[ -z "${golden:-}" ]]; then
-        # Si no hay golden guardado, no bloqueamos (compat), pero avisamos.
-        log_warn "No hay GOLDEN_SHA registrado. (Compat) Continuando sin validación estricta."
-        return 0
-    fi
-
-    local head_sha
-    head_sha="$(git rev-parse HEAD 2>/dev/null || true)"
-
-    if [[ -z "${head_sha:-}" ]]; then
-        log_error "No pude resolver HEAD para validar GOLDEN_SHA."
-        return 1
-    fi
-
-    if [[ "$head_sha" != "$golden" ]]; then
-        log_error "GOLDEN_SHA mismatch en ${context}."
-        echo "   GOLDEN_SHA: $golden"
-        echo "   HEAD      : $head_sha"
-        if [[ "$allow" == "1" ]]; then
-            log_warn "DEVTOOLS_ALLOW_GOLDEN_SHA_MISMATCH=1 -> Continuando bajo tu responsabilidad."
-            return 0
-        fi
-        return 1
-    fi
-
-    log_success "GOLDEN_SHA validado en ${context}: $golden"
-    return 0
 }
 
 # ==============================================================================
@@ -293,6 +102,7 @@ promote_sync_all() {
         echo
         
         if ask_yes_no "¿Quieres FUSIONAR '$current_branch' dentro de '$canonical_branch' y sincronizar todo?"; then
+            resync_submodules_hard
             ensure_clean_git
             log_info "🧲 Absorbiendo '$current_branch' en '$canonical_branch'..."
             
@@ -329,6 +139,7 @@ promote_sync_all() {
     log_info "   Flujo: $source_branch -> dev -> staging -> main"
     echo
 
+    resync_submodules_hard
     ensure_clean_git
 
     # Asegurar fuente actualizada
@@ -403,6 +214,7 @@ promote_dev_update_squash() {
         exit 1
     fi
 
+    resync_submodules_hard
     ensure_clean_git
 
     # Traer refs frescas
@@ -611,7 +423,10 @@ promote_to_dev() {
     fi
     log_warn "🚧 PROMOCIÓN A DEV (Destructiva)"
     if ! ask_yes_no "¿Aplastar 'dev' con '$current_branch'?"; then exit 0; fi
+
+    resync_submodules_hard
     ensure_clean_git
+
     update_branch_from_remote "dev" "origin" "true"
     git reset --hard "$current_branch"
     git push origin dev --force
@@ -632,6 +447,7 @@ promote_to_dev() {
 }
 
 promote_to_staging() {
+    resync_submodules_hard
     ensure_clean_git
     local current
     current="$(git branch --show-current)"
@@ -747,7 +563,10 @@ promote_to_staging() {
     prepend_release_notes_header "$tmp_notes" "Release Notes - ${rc_tag} (Staging)"
     
     if ! ask_yes_no "¿Desplegar a STAGING con tag $rc_tag?"; then exit 0; fi
+
+    resync_submodules_hard
     ensure_clean_git
+
     update_branch_from_remote "staging"
     git merge --ff-only dev
 
@@ -771,6 +590,7 @@ promote_to_staging() {
 }
 
 promote_to_prod() {
+    resync_submodules_hard
     ensure_clean_git
     local current
     current="$(git branch --show-current)"
@@ -872,7 +692,10 @@ promote_to_prod() {
 
     prepend_release_notes_header "$tmp_notes" "Release Notes - ${release_tag} (Producción)"
     if ! ask_yes_no "¿Confirmar pase a Producción ($release_tag)?"; then exit 0; fi
+
+    resync_submodules_hard
     ensure_clean_git
+
     update_branch_from_remote "main"
     git merge --ff-only staging
 
@@ -903,7 +726,10 @@ create_hotfix() {
     log_warn "🔥 HOTFIX MODE"
     read -r -p "Nombre del hotfix: " hf_name
     local hf_branch="hotfix/$hf_name"
+
+    resync_submodules_hard
     ensure_clean_git
+
     update_branch_from_remote "main"
     git checkout -b "$hf_branch"
     log_success "✅ Rama hotfix creada: $hf_branch"
@@ -913,7 +739,10 @@ finish_hotfix() {
     local current
     current="$(git branch --show-current)"
     [[ "$current" != hotfix/* ]] && { log_error "No estás en una rama hotfix."; exit 1; }
+
+    resync_submodules_hard
     ensure_clean_git
+
     log_warn "🩹 Finalizando Hotfix..."
     update_branch_from_remote "main"
     git merge --no-ff "$current" -m "Merge hotfix: $current"
