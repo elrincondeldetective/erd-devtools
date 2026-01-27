@@ -53,18 +53,466 @@ resolve_repo_version_file() {
 }
 
 # ==============================================================================
-# FIX (NUEVO): AUTO-RESYNC DE SUBMÓDULOS ANTES DE VALIDAR "DIRTY"
+# FASE 2 (NUEVO): UN SOLO DUEÑO DE TAGS (LOCAL vs GITHUB)
 # ==============================================================================
 # Objetivo:
-# - Evitar el error recurrente: ".devtools (new commits)" => ensure_clean_git falla.
-# - Forzar que los submódulos queden exactamente en el SHA que el repo referencia (gitlink),
-#   antes de validar/promover.
-resync_submodules_hard() {
-    # Solo aplica si el repo tiene submódulos.
-    if [[ -f ".gitmodules" ]]; then
-        git submodule sync --recursive >/dev/null 2>&1 || true
-        git submodule update --init --recursive >/dev/null 2>&1 || true
+# - Evitar duplicados/carreras cuando el repo ya tiene workflows que crean tags.
+# - Regla:
+#   - Si el repo TIENE workflows de tagging (tag-rc-on-staging / tag-final-on-main),
+#     entonces GitHub es el dueño del tag y el promote local NO crea tags.
+#   - Si no existen, el promote local sigue creando tags (comportamiento histórico).
+#
+# Overrides:
+# - DEVTOOLS_FORCE_LOCAL_TAGS=1  -> fuerza tag local aunque existan workflows.
+# - DEVTOOLS_DISABLE_GH_TAGGER=1 -> equivalente (compat semántica).
+repo_has_workflow_file() {
+    local wf_name="$1"
+    local wf_dir="${REPO_ROOT}/.github/workflows"
+    [[ -f "${wf_dir}/${wf_name}.yaml" || -f "${wf_dir}/${wf_name}.yml" ]]
+}
+
+should_tag_locally_for_staging() {
+    # Force local behavior if explicitly requested
+    if [[ "${DEVTOOLS_FORCE_LOCAL_TAGS:-0}" == "1" || "${DEVTOOLS_DISABLE_GH_TAGGER:-0}" == "1" ]]; then
+        return 0
     fi
+
+    # If GitHub tagger exists, do NOT tag locally
+    if repo_has_workflow_file "tag-rc-on-staging"; then
+        return 1
+    fi
+
+    return 0
+}
+
+should_tag_locally_for_prod() {
+    # Force local behavior if explicitly requested
+    if [[ "${DEVTOOLS_FORCE_LOCAL_TAGS:-0}" == "1" || "${DEVTOOLS_DISABLE_GH_TAGGER:-0}" == "1" ]]; then
+        return 0
+    fi
+
+    # If GitHub tagger exists, do NOT tag locally
+    if repo_has_workflow_file "tag-final-on-main"; then
+        return 1
+    fi
+
+    return 0
+}
+
+# ==============================================================================
+# FASE 3 (NUEVO): GOLDEN SHA REAL (mismo SHA dev -> staging -> main)
+# ==============================================================================
+# Objetivo:
+# - Capturar y persistir el SHA “golden” que pasó checks y quedó en dev.
+# - En staging/prod, asegurar que se promueve EXACTAMENTE ese SHA (ff-only).
+#
+# Overrides:
+# - DEVTOOLS_ALLOW_GOLDEN_SHA_MISMATCH=1   -> permite continuar aunque no coincida (no recomendado).
+# - DEVTOOLS_PR_MERGE_TIMEOUT_SECONDS=900  -> timeout espera merge PR (segundos).
+# - DEVTOOLS_PR_MERGE_POLL_SECONDS=5       -> intervalo polling (segundos).
+resolve_golden_sha_file() {
+    # Preferimos dejar un rastro dentro de .devtools si existe como carpeta del repo,
+    # pero si estamos dentro del repo erd-devtools (REPO_ROOT==.devtools), usamos root.
+    if [[ -d "${REPO_ROOT}/.devtools" ]]; then
+        echo "${REPO_ROOT}/.devtools/.last_golden_sha"
+        return 0
+    fi
+    echo "${REPO_ROOT}/.last_golden_sha"
+}
+
+write_golden_sha() {
+    local sha="$1"
+    local meta="${2:-}"
+    local f
+    f="$(resolve_golden_sha_file)"
+
+    [[ -n "${sha:-}" ]] || return 1
+
+    {
+        echo "$sha"
+        [[ -n "$meta" ]] && echo "$meta"
+        echo "timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    } > "$f" || return 1
+
+    return 0
+}
+
+read_golden_sha() {
+    local f
+    f="$(resolve_golden_sha_file)"
+    [[ -f "$f" ]] || return 1
+    head -n 1 "$f" | tr -d '[:space:]'
+}
+
+ensure_local_tracking_branch() {
+    local branch="$1"
+    local remote="${2:-origin}"
+
+    git fetch "$remote" "$branch" >/dev/null 2>&1 || true
+
+    if git show-ref --verify --quiet "refs/heads/${branch}"; then
+        return 0
+    fi
+
+    if git show-ref --verify --quiet "refs/remotes/${remote}/${branch}"; then
+        git checkout -b "$branch" "${remote}/${branch}" >/dev/null 2>&1 || return 1
+        return 0
+    fi
+
+    # Último recurso: crear la rama desde el remoto explícito si existe
+    if git rev-parse "${remote}/${branch}" >/dev/null 2>&1; then
+        git checkout -b "$branch" "${remote}/${branch}" >/dev/null 2>&1 || return 1
+        return 0
+    fi
+
+    return 1
+}
+
+wait_for_pr_merge_and_get_sha() {
+    local pr_number="$1"
+    local timeout="${DEVTOOLS_PR_MERGE_TIMEOUT_SECONDS:-900}"
+    local interval="${DEVTOOLS_PR_MERGE_POLL_SECONDS:-5}"
+    local elapsed=0
+
+    while true; do
+        # merged: true/false
+        local merged state
+        merged="$(gh pr view "$pr_number" --json merged --jq '.merged' 2>/dev/null || echo "false")"
+        state="$(gh pr view "$pr_number" --json state --jq '.state' 2>/dev/null || echo "")"
+
+        if [[ "$merged" == "true" ]]; then
+            local merge_sha
+            merge_sha="$(gh pr view "$pr_number" --json mergeCommit --jq '.mergeCommit.oid' 2>/dev/null || echo "")"
+            if [[ -n "${merge_sha:-}" && "${merge_sha:-null}" != "null" ]]; then
+                echo "$merge_sha"
+                return 0
+            fi
+            # Si está merged pero no podemos leer mergeCommit, seguimos intentando un poco.
+        else
+            # Si el PR se cerró sin merge, abortamos.
+            if [[ "$state" == "CLOSED" ]]; then
+                log_error "El PR #$pr_number está CLOSED y no fue mergeado. Abortando."
+                return 1
+            fi
+        fi
+
+        if (( elapsed >= timeout )); then
+            log_error "Timeout esperando a que el PR #$pr_number sea mergeado."
+            return 1
+        fi
+
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+}
+
+sync_branch_to_origin() {
+    local branch="$1"
+    local remote="${2:-origin}"
+
+    ensure_clean_git
+    ensure_local_tracking_branch "$branch" "$remote" || {
+        log_error "No pude preparar la rama '$branch' desde '$remote/$branch'."
+        return 1
+    }
+
+    git checkout "$branch" >/dev/null 2>&1 || return 1
+    git fetch "$remote" "$branch" >/dev/null 2>&1 || true
+    # Aseguramos que la rama local refleje EXACTAMENTE el remoto (golden truth)
+    git reset --hard "${remote}/${branch}" >/dev/null 2>&1 || true
+    return 0
+}
+
+assert_golden_sha_matches_head_or_die() {
+    local context="$1"
+    local allow="${DEVTOOLS_ALLOW_GOLDEN_SHA_MISMATCH:-0}"
+    local golden=""
+    golden="$(read_golden_sha 2>/dev/null || true)"
+
+    if [[ -z "${golden:-}" ]]; then
+        # Si no hay golden guardado, no bloqueamos (compat), pero avisamos.
+        log_warn "No hay GOLDEN_SHA registrado. (Compat) Continuando sin validación estricta."
+        return 0
+    fi
+
+    local head_sha
+    head_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+
+    if [[ -z "${head_sha:-}" ]]; then
+        log_error "No pude resolver HEAD para validar GOLDEN_SHA."
+        return 1
+    fi
+
+    if [[ "$head_sha" != "$golden" ]]; then
+        log_error "GOLDEN_SHA mismatch en ${context}."
+        echo "   GOLDEN_SHA: $golden"
+        echo "   HEAD      : $head_sha"
+        if [[ "$allow" == "1" ]]; then
+            log_warn "DEVTOOLS_ALLOW_GOLDEN_SHA_MISMATCH=1 -> Continuando bajo tu responsabilidad."
+            return 0
+        fi
+        return 1
+    fi
+
+    log_success "GOLDEN_SHA validado en ${context}: $golden"
+    return 0
+}
+
+# ==============================================================================
+# FASE 4 (NUEVO): CONECTAR GOLDEN SHA CON GITOPS (update-gitops-manifests)
+# ==============================================================================
+# Objetivo:
+# - Disparar el workflow del superrepo que actualiza manifests a image:sha-<short>.
+# - Usar el GOLDEN_SHA como entrada `sha`.
+# - Inferir `services` desde ecosystem/services.yaml + paths cambiados (incluye cambios de submódulos).
+#
+# Comportamiento:
+# - Por defecto: pregunta (si es TTY) o NO hace nada (si no hay TTY).
+# - Auto: DEVTOOLS_GITOPS_AUTO_UPDATE=1 (no pregunta).
+# - Override de servicios:
+#     DEVTOOLS_GITOPS_SERVICES_JSON='["apps/pmbok/backend"]'
+#     DEVTOOLS_GITOPS_SERVICES='apps/pmbok/backend,apps/pmbok/frontend'
+# - Override de repo root GitOps: DEVTOOLS_GITOPS_ROOT=/path/to/superrepo
+# - Override de workflow name/path: DEVTOOLS_GITOPS_WORKFLOW="update-gitops-manifests.yaml"
+resolve_gitops_root() {
+    # 1) Override explícito
+    if [[ -n "${DEVTOOLS_GITOPS_ROOT:-}" && -d "${DEVTOOLS_GITOPS_ROOT}" ]]; then
+        echo "${DEVTOOLS_GITOPS_ROOT}"
+        return 0
+    fi
+
+    # 2) Si estamos en un superrepo, usamos WORKSPACE_ROOT (si existe y tiene workflow)
+    if [[ -n "${WORKSPACE_ROOT:-}" && -d "${WORKSPACE_ROOT}" ]]; then
+        if [[ -f "${WORKSPACE_ROOT}/.github/workflows/update-gitops-manifests.yaml" || -f "${WORKSPACE_ROOT}/.github/workflows/update-gitops-manifests.yml" ]]; then
+            echo "${WORKSPACE_ROOT}"
+            return 0
+        fi
+    fi
+
+    # 3) Usar el repo actual si tiene el workflow
+    if [[ -f "${REPO_ROOT}/.github/workflows/update-gitops-manifests.yaml" || -f "${REPO_ROOT}/.github/workflows/update-gitops-manifests.yml" ]]; then
+        echo "${REPO_ROOT}"
+        return 0
+    fi
+
+    # 4) Fallback (repo actual)
+    echo "${REPO_ROOT}"
+}
+
+gitops_workflow_name() {
+    echo "${DEVTOOLS_GITOPS_WORKFLOW:-update-gitops-manifests.yaml}"
+}
+
+gitops_has_workflow() {
+    local root
+    root="$(resolve_gitops_root)"
+    local wf
+    wf="$(gitops_workflow_name)"
+    [[ -f "${root}/.github/workflows/${wf}" ]] || [[ -f "${root}/.github/workflows/${wf%.yaml}.yml" ]] || [[ -f "${root}/.github/workflows/${wf%.yml}.yaml" ]]
+}
+
+gitops_services_yaml_path() {
+    local root
+    root="$(resolve_gitops_root)"
+    echo "${root}/ecosystem/services.yaml"
+}
+
+parse_services_yaml_to_paths() {
+    # Output: one service path per line
+    local f="$1"
+    [[ -f "$f" ]] || return 1
+
+    # Parser simple (sin yq): extrae `path:` dentro de cada bloque de servicio
+    awk '
+      $1=="-" && $2=="id:" {seen=1; next}
+      seen==1 && $1=="path:" {print $2; seen=0; next}
+    ' "$f"
+}
+
+json_array_from_lines() {
+    # Lee líneas por stdin y devuelve JSON array compacto
+    # Ej: a\nb -> ["a","b"]
+    local first=1
+    echo -n '['
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        # escape mínimo de backslash y doble comilla
+        line="${line//\\/\\\\}"
+        line="${line//\"/\\\"}"
+        if [[ "$first" -eq 1 ]]; then
+            first=0
+        else
+            echo -n ','
+        fi
+        echo -n "\"$line\""
+    done
+    echo -n ']'
+}
+
+infer_gitops_services_json_from_changed_paths() {
+    # Args:
+    #   $1 = multiline changed paths (optional). If empty, se calcula con HEAD~1..HEAD.
+    local changed_paths="${1:-}"
+
+    # Overrides directos
+    if [[ -n "${DEVTOOLS_GITOPS_SERVICES_JSON:-}" ]]; then
+        echo "${DEVTOOLS_GITOPS_SERVICES_JSON}"
+        return 0
+    fi
+
+    if [[ -n "${DEVTOOLS_GITOPS_SERVICES:-}" ]]; then
+        # CSV -> JSON
+        echo "${DEVTOOLS_GITOPS_SERVICES}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | json_array_from_lines
+        return 0
+    fi
+
+    local services_file
+    services_file="$(gitops_services_yaml_path)"
+    if [[ ! -f "$services_file" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    # Si no nos pasan changed paths, intentamos con el último commit del branch actual
+    if [[ -z "${changed_paths:-}" ]]; then
+        changed_paths="$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+    fi
+
+    # Si sigue vacío, no inferimos nada
+    if [[ -z "${changed_paths:-}" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    # Leer todos los paths de servicios desde el registry
+    local service_paths
+    service_paths="$(parse_services_yaml_to_paths "$services_file" 2>/dev/null || true)"
+
+    if [[ -z "${service_paths:-}" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    # Match por prefijo (ideal para submódulos): si changed_path es prefijo de service_path o viceversa.
+    # Ej: changed "apps/pmbok" matchea "apps/pmbok/backend".
+    local matched=()
+    local sp cp
+
+    while IFS= read -r sp; do
+        [[ -z "$sp" ]] && continue
+
+        while IFS= read -r cp; do
+            [[ -z "$cp" ]] && continue
+
+            if [[ "$sp" == "$cp" || "$sp" == "$cp/"* || "$cp" == "$sp" || "$cp" == "$sp/"* ]]; then
+                matched+=("$sp")
+                break
+            fi
+        done <<< "$changed_paths"
+    done <<< "$service_paths"
+
+    # Dedup + output JSON
+    if [[ "${#matched[@]}" -eq 0 ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    printf "%s\n" "${matched[@]}" | awk '!seen[$0]++' | json_array_from_lines
+}
+
+trigger_gitops_update_workflow() {
+    local sha_full="$1"
+    local target_branch="$2"
+    local services_json="$3"
+
+    local root
+    root="$(resolve_gitops_root)"
+
+    local wf
+    wf="$(gitops_workflow_name)"
+
+    if [[ -z "${sha_full:-}" || -z "${target_branch:-}" ]]; then
+        return 1
+    fi
+
+    if [[ -z "${services_json:-}" ]]; then
+        services_json="[]"
+    fi
+
+    if [[ "$services_json" == "[]" ]]; then
+        log_warn "🧩 GitOps: no se detectaron servicios a actualizar (services=[]). Omitiendo."
+        return 0
+    fi
+
+    if ! command -v gh >/dev/null 2>&1; then
+        log_warn "🧩 GitOps: 'gh' no disponible. Omitiendo disparo de workflow."
+        return 0
+    fi
+
+    if ! gitops_has_workflow; then
+        log_warn "🧩 GitOps: workflow '${wf}' no encontrado en $(resolve_gitops_root). Omitiendo."
+        return 0
+    fi
+
+    local short_sha="${sha_full:0:7}"
+
+    echo
+    log_info "🧩 GitOps: disparando workflow '${wf}'"
+    echo "   root        : $root"
+    echo "   target_branch: $target_branch"
+    echo "   sha         : $sha_full (sha-$short_sha)"
+    echo "   services    : $services_json"
+    echo
+
+    (
+        cd "$root"
+        GH_PAGER=cat gh workflow run "$wf" \
+            -f "sha=$sha_full" \
+            -f "services=$services_json" \
+            -f "target_branch=$target_branch"
+    )
+
+    log_success "🧩 GitOps: workflow enviado. (Revisa Actions para el resultado)"
+    return 0
+}
+
+maybe_trigger_gitops_update() {
+    # Args:
+    #   $1 = target_branch (dev/staging/main)
+    #   $2 = sha_full
+    #   $3 = optional changed paths multiline
+    local target_branch="$1"
+    local sha_full="$2"
+    local changed_paths="${3:-}"
+
+    # No hay SHA => no hacemos nada
+    [[ -n "${sha_full:-}" ]] || return 0
+
+    # Por defecto: preguntar solo si TTY. Auto: DEVTOOLS_GITOPS_AUTO_UPDATE=1.
+    local auto="${DEVTOOLS_GITOPS_AUTO_UPDATE:-0}"
+
+    local short_sha="${sha_full:0:7}"
+    local services_json
+    services_json="$(infer_gitops_services_json_from_changed_paths "$changed_paths")"
+
+    if [[ "$services_json" == "[]" ]]; then
+        return 0
+    fi
+
+    if [[ "$auto" == "1" ]]; then
+        trigger_gitops_update_workflow "$sha_full" "$target_branch" "$services_json"
+        return $?
+    fi
+
+    if is_tty; then
+        if ask_yes_no "🧩 ¿Actualizar GitOps en '${target_branch}' a sha-${short_sha} para los servicios detectados?"; then
+            trigger_gitops_update_workflow "$sha_full" "$target_branch" "$services_json"
+        else
+            log_info "🧩 GitOps: omitido por el usuario."
+        fi
+    fi
+
+    return 0
 }
 
 # ==============================================================================
@@ -102,7 +550,6 @@ promote_sync_all() {
         echo
         
         if ask_yes_no "¿Quieres FUSIONAR '$current_branch' dentro de '$canonical_branch' y sincronizar todo?"; then
-            resync_submodules_hard
             ensure_clean_git
             log_info "🧲 Absorbiendo '$current_branch' en '$canonical_branch'..."
             
@@ -139,7 +586,6 @@ promote_sync_all() {
     log_info "   Flujo: $source_branch -> dev -> staging -> main"
     echo
 
-    resync_submodules_hard
     ensure_clean_git
 
     # Asegurar fuente actualizada
@@ -214,7 +660,6 @@ promote_dev_update_squash() {
         exit 1
     fi
 
-    resync_submodules_hard
     ensure_clean_git
 
     # Traer refs frescas
@@ -406,6 +851,13 @@ promote_to_dev() {
                     log_warn "⚠️ No coincidió mergeCommit con origin/dev a tiempo. Guardando HEAD de dev como GOLDEN_SHA: $dev_sha"
                 fi
 
+                # ==============================================================================
+                # FASE 4 (NUEVO): Disparar update-gitops-manifests con el GOLDEN_SHA
+                # ==============================================================================
+                local changed_paths
+                changed_paths="$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+                maybe_trigger_gitops_update "dev" "$dev_sha" "$changed_paths"
+
                 banner "✅ PR FUSIONADO Y DEV SINCRONIZADO"
                 echo "👌 Estás en 'dev' con el Golden SHA."
                 echo "👉 Siguiente paso sugerido: git promote staging"
@@ -423,9 +875,13 @@ promote_to_dev() {
     fi
     log_warn "🚧 PROMOCIÓN A DEV (Destructiva)"
     if ! ask_yes_no "¿Aplastar 'dev' con '$current_branch'?"; then exit 0; fi
-
-    resync_submodules_hard
     ensure_clean_git
+
+    # ==============================================================================
+    # FASE 4 (NUEVO): Capturar paths cambiados ANTES del reset destructivo
+    # ==============================================================================
+    local __gitops_changed_paths
+    __gitops_changed_paths="$(git diff --name-only "origin/dev..${current_branch}" 2>/dev/null || true)"
 
     update_branch_from_remote "dev" "origin" "true"
     git reset --hard "$current_branch"
@@ -444,10 +900,16 @@ promote_to_dev() {
         write_golden_sha "$dev_sha" "source=force_reset from=$current_branch" || true
         log_success "✅ GOLDEN_SHA capturado: $dev_sha"
     fi
+
+    # ==============================================================================
+    # FASE 4 (NUEVO): Disparar update-gitops-manifests con el GOLDEN_SHA
+    # ==============================================================================
+    if [[ -n "${dev_sha:-}" ]]; then
+        maybe_trigger_gitops_update "dev" "$dev_sha" "$__gitops_changed_paths"
+    fi
 }
 
 promote_to_staging() {
-    resync_submodules_hard
     ensure_clean_git
     local current
     current="$(git branch --show-current)"
@@ -498,6 +960,14 @@ promote_to_staging() {
 
         git push origin staging
         log_success "✅ Staging actualizado. (RC tag lo creará GitHub Actions)"
+
+        # ==============================================================================
+        # FASE 4 (NUEVO): Disparar update-gitops-manifests para STAGING
+        # ==============================================================================
+        local changed_paths
+        changed_paths="$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+        maybe_trigger_gitops_update "staging" "$staging_sha" "$changed_paths"
+
         return 0
     fi
     
@@ -563,10 +1033,7 @@ promote_to_staging() {
     prepend_release_notes_header "$tmp_notes" "Release Notes - ${rc_tag} (Staging)"
     
     if ! ask_yes_no "¿Desplegar a STAGING con tag $rc_tag?"; then exit 0; fi
-
-    resync_submodules_hard
     ensure_clean_git
-
     update_branch_from_remote "staging"
     git merge --ff-only dev
 
@@ -587,10 +1054,16 @@ promote_to_staging() {
     git push origin staging
     git push origin "$rc_tag"
     log_success "✅ Staging actualizado ($rc_tag)."
+
+    # ==============================================================================
+    # FASE 4 (NUEVO): Disparar update-gitops-manifests para STAGING
+    # ==============================================================================
+    local changed_paths
+    changed_paths="$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+    maybe_trigger_gitops_update "staging" "$staging_sha" "$changed_paths"
 }
 
 promote_to_prod() {
-    resync_submodules_hard
     ensure_clean_git
     local current
     current="$(git branch --show-current)"
@@ -641,6 +1114,14 @@ promote_to_prod() {
 
         git push origin main
         log_success "✅ Producción actualizada. (Tag final lo creará GitHub Actions)"
+
+        # ==============================================================================
+        # FASE 4 (NUEVO): Disparar update-gitops-manifests para MAIN
+        # ==============================================================================
+        local changed_paths
+        changed_paths="$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+        maybe_trigger_gitops_update "main" "$main_sha" "$changed_paths"
+
         return 0
     fi
     
@@ -692,10 +1173,7 @@ promote_to_prod() {
 
     prepend_release_notes_header "$tmp_notes" "Release Notes - ${release_tag} (Producción)"
     if ! ask_yes_no "¿Confirmar pase a Producción ($release_tag)?"; then exit 0; fi
-
-    resync_submodules_hard
     ensure_clean_git
-
     update_branch_from_remote "main"
     git merge --ff-only staging
 
@@ -720,16 +1198,20 @@ promote_to_prod() {
     fi
     git push origin main
     log_success "✅ Producción actualizada ($release_tag)."
+
+    # ==============================================================================
+    # FASE 4 (NUEVO): Disparar update-gitops-manifests para MAIN
+    # ==============================================================================
+    local changed_paths
+    changed_paths="$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+    maybe_trigger_gitops_update "main" "$main_sha" "$changed_paths"
 }
 
 create_hotfix() {
     log_warn "🔥 HOTFIX MODE"
     read -r -p "Nombre del hotfix: " hf_name
     local hf_branch="hotfix/$hf_name"
-
-    resync_submodules_hard
     ensure_clean_git
-
     update_branch_from_remote "main"
     git checkout -b "$hf_branch"
     log_success "✅ Rama hotfix creada: $hf_branch"
@@ -739,10 +1221,7 @@ finish_hotfix() {
     local current
     current="$(git branch --show-current)"
     [[ "$current" != hotfix/* ]] && { log_error "No estás en una rama hotfix."; exit 1; }
-
-    resync_submodules_hard
     ensure_clean_git
-
     log_warn "🩹 Finalizando Hotfix..."
     update_branch_from_remote "main"
     git merge --no-ff "$current" -m "Merge hotfix: $current"
