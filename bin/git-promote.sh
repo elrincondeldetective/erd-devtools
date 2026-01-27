@@ -259,6 +259,263 @@ assert_golden_sha_matches_head_or_die() {
 }
 
 # ==============================================================================
+# FASE 4 (NUEVO): CONECTAR GOLDEN SHA CON GITOPS (update-gitops-manifests)
+# ==============================================================================
+# Objetivo:
+# - Disparar el workflow del superrepo que actualiza manifests a image:sha-<short>.
+# - Usar el GOLDEN_SHA como entrada `sha`.
+# - Inferir `services` desde ecosystem/services.yaml + paths cambiados (incluye cambios de submódulos).
+#
+# Comportamiento:
+# - Por defecto: pregunta (si es TTY) o NO hace nada (si no hay TTY).
+# - Auto: DEVTOOLS_GITOPS_AUTO_UPDATE=1 (no pregunta).
+# - Override de servicios:
+#     DEVTOOLS_GITOPS_SERVICES_JSON='["apps/pmbok/backend"]'
+#     DEVTOOLS_GITOPS_SERVICES='apps/pmbok/backend,apps/pmbok/frontend'
+# - Override de repo root GitOps: DEVTOOLS_GITOPS_ROOT=/path/to/superrepo
+# - Override de workflow name/path: DEVTOOLS_GITOPS_WORKFLOW="update-gitops-manifests.yaml"
+resolve_gitops_root() {
+    # 1) Override explícito
+    if [[ -n "${DEVTOOLS_GITOPS_ROOT:-}" && -d "${DEVTOOLS_GITOPS_ROOT}" ]]; then
+        echo "${DEVTOOLS_GITOPS_ROOT}"
+        return 0
+    fi
+
+    # 2) Si estamos en un superrepo, usamos WORKSPACE_ROOT (si existe y tiene workflow)
+    if [[ -n "${WORKSPACE_ROOT:-}" && -d "${WORKSPACE_ROOT}" ]]; then
+        if [[ -f "${WORKSPACE_ROOT}/.github/workflows/update-gitops-manifests.yaml" || -f "${WORKSPACE_ROOT}/.github/workflows/update-gitops-manifests.yml" ]]; then
+            echo "${WORKSPACE_ROOT}"
+            return 0
+        fi
+    fi
+
+    # 3) Usar el repo actual si tiene el workflow
+    if [[ -f "${REPO_ROOT}/.github/workflows/update-gitops-manifests.yaml" || -f "${REPO_ROOT}/.github/workflows/update-gitops-manifests.yml" ]]; then
+        echo "${REPO_ROOT}"
+        return 0
+    fi
+
+    # 4) Fallback (repo actual)
+    echo "${REPO_ROOT}"
+}
+
+gitops_workflow_name() {
+    echo "${DEVTOOLS_GITOPS_WORKFLOW:-update-gitops-manifests.yaml}"
+}
+
+gitops_has_workflow() {
+    local root
+    root="$(resolve_gitops_root)"
+    local wf
+    wf="$(gitops_workflow_name)"
+    [[ -f "${root}/.github/workflows/${wf}" ]] || [[ -f "${root}/.github/workflows/${wf%.yaml}.yml" ]] || [[ -f "${root}/.github/workflows/${wf%.yml}.yaml" ]]
+}
+
+gitops_services_yaml_path() {
+    local root
+    root="$(resolve_gitops_root)"
+    echo "${root}/ecosystem/services.yaml"
+}
+
+parse_services_yaml_to_paths() {
+    # Output: one service path per line
+    local f="$1"
+    [[ -f "$f" ]] || return 1
+
+    # Parser simple (sin yq): extrae `path:` dentro de cada bloque de servicio
+    awk '
+      $1=="-" && $2=="id:" {seen=1; next}
+      seen==1 && $1=="path:" {print $2; seen=0; next}
+    ' "$f"
+}
+
+json_array_from_lines() {
+    # Lee líneas por stdin y devuelve JSON array compacto
+    # Ej: a\nb -> ["a","b"]
+    local first=1
+    echo -n '['
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        # escape mínimo de backslash y doble comilla
+        line="${line//\\/\\\\}"
+        line="${line//\"/\\\"}"
+        if [[ "$first" -eq 1 ]]; then
+            first=0
+        else
+            echo -n ','
+        fi
+        echo -n "\"$line\""
+    done
+    echo -n ']'
+}
+
+infer_gitops_services_json_from_changed_paths() {
+    # Args:
+    #   $1 = multiline changed paths (optional). If empty, se calcula con HEAD~1..HEAD.
+    local changed_paths="${1:-}"
+
+    # Overrides directos
+    if [[ -n "${DEVTOOLS_GITOPS_SERVICES_JSON:-}" ]]; then
+        echo "${DEVTOOLS_GITOPS_SERVICES_JSON}"
+        return 0
+    fi
+
+    if [[ -n "${DEVTOOLS_GITOPS_SERVICES:-}" ]]; then
+        # CSV -> JSON
+        echo "${DEVTOOLS_GITOPS_SERVICES}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | json_array_from_lines
+        return 0
+    fi
+
+    local services_file
+    services_file="$(gitops_services_yaml_path)"
+    if [[ ! -f "$services_file" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    # Si no nos pasan changed paths, intentamos con el último commit del branch actual
+    if [[ -z "${changed_paths:-}" ]]; then
+        changed_paths="$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+    fi
+
+    # Si sigue vacío, no inferimos nada
+    if [[ -z "${changed_paths:-}" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    # Leer todos los paths de servicios desde el registry
+    local service_paths
+    service_paths="$(parse_services_yaml_to_paths "$services_file" 2>/dev/null || true)"
+
+    if [[ -z "${service_paths:-}" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    # Match por prefijo (ideal para submódulos): si changed_path es prefijo de service_path o viceversa.
+    # Ej: changed "apps/pmbok" matchea "apps/pmbok/backend".
+    local matched=()
+    local sp cp
+
+    while IFS= read -r sp; do
+        [[ -z "$sp" ]] && continue
+
+        while IFS= read -r cp; do
+            [[ -z "$cp" ]] && continue
+
+            if [[ "$sp" == "$cp" || "$sp" == "$cp/"* || "$cp" == "$sp" || "$cp" == "$sp/"* ]]; then
+                matched+=("$sp")
+                break
+            fi
+        done <<< "$changed_paths"
+    done <<< "$service_paths"
+
+    # Dedup + output JSON
+    if [[ "${#matched[@]}" -eq 0 ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    printf "%s\n" "${matched[@]}" | awk '!seen[$0]++' | json_array_from_lines
+}
+
+trigger_gitops_update_workflow() {
+    local sha_full="$1"
+    local target_branch="$2"
+    local services_json="$3"
+
+    local root
+    root="$(resolve_gitops_root)"
+
+    local wf
+    wf="$(gitops_workflow_name)"
+
+    if [[ -z "${sha_full:-}" || -z "${target_branch:-}" ]]; then
+        return 1
+    fi
+
+    if [[ -z "${services_json:-}" ]]; then
+        services_json="[]"
+    fi
+
+    if [[ "$services_json" == "[]" ]]; then
+        log_warn "🧩 GitOps: no se detectaron servicios a actualizar (services=[]). Omitiendo."
+        return 0
+    fi
+
+    if ! command -v gh >/dev/null 2>&1; then
+        log_warn "🧩 GitOps: 'gh' no disponible. Omitiendo disparo de workflow."
+        return 0
+    fi
+
+    if ! gitops_has_workflow; then
+        log_warn "🧩 GitOps: workflow '${wf}' no encontrado en $(resolve_gitops_root). Omitiendo."
+        return 0
+    fi
+
+    local short_sha="${sha_full:0:7}"
+
+    echo
+    log_info "🧩 GitOps: disparando workflow '${wf}'"
+    echo "   root        : $root"
+    echo "   target_branch: $target_branch"
+    echo "   sha         : $sha_full (sha-$short_sha)"
+    echo "   services    : $services_json"
+    echo
+
+    (
+        cd "$root"
+        GH_PAGER=cat gh workflow run "$wf" \
+            -f "sha=$sha_full" \
+            -f "services=$services_json" \
+            -f "target_branch=$target_branch"
+    )
+
+    log_success "🧩 GitOps: workflow enviado. (Revisa Actions para el resultado)"
+    return 0
+}
+
+maybe_trigger_gitops_update() {
+    # Args:
+    #   $1 = target_branch (dev/staging/main)
+    #   $2 = sha_full
+    #   $3 = optional changed paths multiline
+    local target_branch="$1"
+    local sha_full="$2"
+    local changed_paths="${3:-}"
+
+    # No hay SHA => no hacemos nada
+    [[ -n "${sha_full:-}" ]] || return 0
+
+    # Por defecto: preguntar solo si TTY. Auto: DEVTOOLS_GITOPS_AUTO_UPDATE=1.
+    local auto="${DEVTOOLS_GITOPS_AUTO_UPDATE:-0}"
+
+    local short_sha="${sha_full:0:7}"
+    local services_json
+    services_json="$(infer_gitops_services_json_from_changed_paths "$changed_paths")"
+
+    if [[ "$services_json" == "[]" ]]; then
+        return 0
+    fi
+
+    if [[ "$auto" == "1" ]]; then
+        trigger_gitops_update_workflow "$sha_full" "$target_branch" "$services_json"
+        return $?
+    fi
+
+    if is_tty; then
+        if ask_yes_no "🧩 ¿Actualizar GitOps en '${target_branch}' a sha-${short_sha} para los servicios detectados?"; then
+            trigger_gitops_update_workflow "$sha_full" "$target_branch" "$services_json"
+        else
+            log_info "🧩 GitOps: omitido por el usuario."
+        fi
+    fi
+
+    return 0
+}
+
+# ==============================================================================
 # 2. SETUP DE IDENTIDAD (CRÍTICO PARA PULL/PUSH)
 # ==============================================================================
 # Si no estamos en modo simple, cargamos las llaves SSH antes de empezar
@@ -594,6 +851,13 @@ promote_to_dev() {
                     log_warn "⚠️ No coincidió mergeCommit con origin/dev a tiempo. Guardando HEAD de dev como GOLDEN_SHA: $dev_sha"
                 fi
 
+                # ==============================================================================
+                # FASE 4 (NUEVO): Disparar update-gitops-manifests con el GOLDEN_SHA
+                # ==============================================================================
+                local changed_paths
+                changed_paths="$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+                maybe_trigger_gitops_update "dev" "$dev_sha" "$changed_paths"
+
                 banner "✅ PR FUSIONADO Y DEV SINCRONIZADO"
                 echo "👌 Estás en 'dev' con el Golden SHA."
                 echo "👉 Siguiente paso sugerido: git promote staging"
@@ -612,6 +876,13 @@ promote_to_dev() {
     log_warn "🚧 PROMOCIÓN A DEV (Destructiva)"
     if ! ask_yes_no "¿Aplastar 'dev' con '$current_branch'?"; then exit 0; fi
     ensure_clean_git
+
+    # ==============================================================================
+    # FASE 4 (NUEVO): Capturar paths cambiados ANTES del reset destructivo
+    # ==============================================================================
+    local __gitops_changed_paths
+    __gitops_changed_paths="$(git diff --name-only "origin/dev..${current_branch}" 2>/dev/null || true)"
+
     update_branch_from_remote "dev" "origin" "true"
     git reset --hard "$current_branch"
     git push origin dev --force
@@ -628,6 +899,13 @@ promote_to_dev() {
     if [[ -n "${dev_sha:-}" ]]; then
         write_golden_sha "$dev_sha" "source=force_reset from=$current_branch" || true
         log_success "✅ GOLDEN_SHA capturado: $dev_sha"
+    fi
+
+    # ==============================================================================
+    # FASE 4 (NUEVO): Disparar update-gitops-manifests con el GOLDEN_SHA
+    # ==============================================================================
+    if [[ -n "${dev_sha:-}" ]]; then
+        maybe_trigger_gitops_update "dev" "$dev_sha" "$__gitops_changed_paths"
     fi
 }
 
@@ -682,6 +960,14 @@ promote_to_staging() {
 
         git push origin staging
         log_success "✅ Staging actualizado. (RC tag lo creará GitHub Actions)"
+
+        # ==============================================================================
+        # FASE 4 (NUEVO): Disparar update-gitops-manifests para STAGING
+        # ==============================================================================
+        local changed_paths
+        changed_paths="$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+        maybe_trigger_gitops_update "staging" "$staging_sha" "$changed_paths"
+
         return 0
     fi
     
@@ -768,6 +1054,13 @@ promote_to_staging() {
     git push origin staging
     git push origin "$rc_tag"
     log_success "✅ Staging actualizado ($rc_tag)."
+
+    # ==============================================================================
+    # FASE 4 (NUEVO): Disparar update-gitops-manifests para STAGING
+    # ==============================================================================
+    local changed_paths
+    changed_paths="$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+    maybe_trigger_gitops_update "staging" "$staging_sha" "$changed_paths"
 }
 
 promote_to_prod() {
@@ -821,6 +1114,14 @@ promote_to_prod() {
 
         git push origin main
         log_success "✅ Producción actualizada. (Tag final lo creará GitHub Actions)"
+
+        # ==============================================================================
+        # FASE 4 (NUEVO): Disparar update-gitops-manifests para MAIN
+        # ==============================================================================
+        local changed_paths
+        changed_paths="$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+        maybe_trigger_gitops_update "main" "$main_sha" "$changed_paths"
+
         return 0
     fi
     
@@ -897,6 +1198,13 @@ promote_to_prod() {
     fi
     git push origin main
     log_success "✅ Producción actualizada ($release_tag)."
+
+    # ==============================================================================
+    # FASE 4 (NUEVO): Disparar update-gitops-manifests para MAIN
+    # ==============================================================================
+    local changed_paths
+    changed_paths="$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+    maybe_trigger_gitops_update "main" "$main_sha" "$changed_paths"
 }
 
 create_hotfix() {
