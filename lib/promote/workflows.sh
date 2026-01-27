@@ -419,39 +419,48 @@ promote_to_staging() {
     generate_ai_prompt "dev" "origin/staging"
 
     # ==============================================================================
-    # FASE 2: SI GITHUB TAGGEA EN STAGING, NO TAGGEAR LOCALMENTE
+    # FASE 2 (HÍBRIDA): DECISIÓN MANUAL VS AUTOMÁTICA
     # ==============================================================================
+    local use_remote_tagger=0
+    
+    # Verificamos si existe el workflow en GitHub
     if ! should_tag_locally_for_staging; then
         echo
-        log_info "🏷️  Tagger detectado en GitHub (tag-rc-on-staging)."
-        log_info "   Este repo delega la creación del RC tag a GitHub Actions."
-        log_info "   (Override: DEVTOOLS_FORCE_LOCAL_TAGS=1 para forzar tag local)"
+        log_info "🤖 Se detectó automatización en GitHub (tag-rc-on-staging)."
+        echo "   El sistema puede calcular el siguiente RC automáticamente."
         echo
+        echo "   Opciones:"
+        echo "     [Y] Sí (Auto):   Solo empujar cambios. GitHub crea el tag (vX.Y.Z-rcN)."
+        echo "     [N] No (Manual): Quiero definir el tag yo mismo ahora."
+        echo
+        
+        if ask_yes_no "¿Delegar el tagging a GitHub?"; then
+            use_remote_tagger=1
+        else
+            log_warn "🖐️  Modo Manual activado: Tú tienes el control."
+            use_remote_tagger=0
+        fi
+    fi
 
-        if ! ask_yes_no "¿Promover a STAGING (sin crear tag local)?"; then exit 0; fi
+    # --- CAMINO A: AUTOMÁTICO (Solo Push) ---
+    if [[ "$use_remote_tagger" == "1" ]]; then
         ensure_clean_git
         update_branch_from_remote "staging"
         git merge --ff-only dev
 
-        # ==============================================================================
-        # FASE 3: Asegurar mismo SHA (staging == dev == golden)
-        # ==============================================================================
+        # Validar SHA
         local staging_sha dev_sha
         staging_sha="$(git rev-parse HEAD 2>/dev/null || true)"
         dev_sha="$(git rev-parse dev 2>/dev/null || true)"
         if [[ -n "${dev_sha:-}" && -n "${staging_sha:-}" && "$staging_sha" != "$dev_sha" ]]; then
             log_error "FF-only merge no resultó en el mismo SHA (staging != dev). Abortando."
-            echo "   dev    : $dev_sha"
-            echo "   staging: $staging_sha"
             exit 1
         fi
 
         git push origin staging
-        log_success "✅ Staging actualizado. (RC tag lo creará GitHub Actions)"
+        log_success "✅ Staging actualizado. (GitHub Actions creará el tag RC en breve)."
 
-        # ==============================================================================
-        # FASE 4: Disparar update-gitops-manifests para STAGING
-        # ==============================================================================
+        # Disparar GitOps
         local changed_paths
         changed_paths="$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
         maybe_trigger_gitops_update "staging" "$staging_sha" "$changed_paths"
@@ -459,7 +468,8 @@ promote_to_staging() {
         return 0
     fi
     
-    # [FIX] Inicializar variable para evitar error 'unbound variable' en strict mode
+    # --- CAMINO B: MANUAL (El código original continúa aquí abajo) ---
+    
     local tmp_notes
     tmp_notes="$(mktemp -t release-notes.XXXXXX.md)"
     trap 'rm -f "$tmp_notes"' EXIT
