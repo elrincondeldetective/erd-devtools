@@ -459,15 +459,28 @@ promote_to_staging() {
     # ==============================================================================
     # FASE EXTRA: BUILD LOCAL DEL GOLDEN SHA (Para garantizar el artefacto)
     # ==============================================================================
+    # Intentamos encontrar el Taskfile raíz, ya sea en el directorio actual o uno arriba
+    local root_taskfile=""
     if [[ -f "${REPO_ROOT}/Taskfile.yaml" ]]; then
+        root_taskfile="${REPO_ROOT}/Taskfile.yaml"
+    elif [[ -f "${REPO_ROOT}/../Taskfile.yaml" ]]; then
+        root_taskfile="${REPO_ROOT}/../Taskfile.yaml"
+    fi
+
+    if [[ -n "$root_taskfile" ]]; then
         echo
         log_info "🏗️  Generando BUILD local para asegurar Golden SHA (sha-$short_sha)..."
+        local task_dir
+        task_dir="$(dirname "$root_taskfile")"
         
-        # Ejecutamos el build específicamente para este SHA
-        (cd "${REPO_ROOT}" && task app:build APP=pmbok-backend TAG="sha-$short_sha") || exit 1
-        (cd "${REPO_ROOT}" && task app:build APP=pmbok-frontend TAG="sha-$short_sha") || exit 1
+        # Ejecutamos el build específicamente para este SHA usando el Taskfile encontrado
+        # Usamos subshell para no cambiar el directorio actual del script
+        (cd "$task_dir" && task app:build APP=pmbok-backend TAG="sha-$short_sha") || exit 1
+        (cd "$task_dir" && task app:build APP=pmbok-frontend TAG="sha-$short_sha") || exit 1
         
         log_success "✅ Builds generados con tag: sha-$short_sha"
+    else
+        log_warn "⚠️ No se encontró Taskfile.yaml en la raíz. Omitiendo Build local."
     fi
 
     # ==============================================================================
@@ -575,7 +588,13 @@ promote_to_staging() {
 
     prepend_release_notes_header "$tmp_notes" "Release Notes - ${rc_tag} (Staging)"
     
-    if ! ask_yes_no "¿Desplegar a STAGING con tag $rc_tag?"; then exit 0; fi
+    if ! ask_yes_no "¿Desplegar a STAGING con tag $rc_tag?"; then 
+        # Si el usuario cancela, limpiamos el trap para no borrar archivos random
+        rm -f "$tmp_notes"
+        trap - EXIT
+        exit 0
+    fi
+
     ensure_clean_git
     update_branch_from_remote "staging"
     git merge --ff-only dev
@@ -587,6 +606,9 @@ promote_to_staging() {
     staging_sha="$(git rev-parse HEAD 2>/dev/null || true)"
     dev_sha="$(git rev-parse dev 2>/dev/null || true)"
     if [[ -n "${dev_sha:-}" && -n "${staging_sha:-}" && "$staging_sha" != "$dev_sha" ]]; then
+        # Limpieza antes de salir por error
+        rm -f "$tmp_notes"
+        trap - EXIT
         log_error "FF-only merge no resultó en el mismo SHA (staging != dev). Abortando."
         echo "   dev    : $dev_sha"
         echo "   staging: $staging_sha"
@@ -597,6 +619,10 @@ promote_to_staging() {
     git push origin staging
     git push origin "$rc_tag"
     log_success "✅ Staging actualizado ($rc_tag)."
+
+    # [FIX] CRASH FIX: Limpiamos archivo y quitamos trap ANTES de que la variable local muera
+    rm -f "$tmp_notes"
+    trap - EXIT
 
     # ==============================================================================
     # FASE 5: LIMPIEZA DE RAMAS DEL BOT (Manual)
@@ -715,7 +741,12 @@ promote_to_prod() {
     release_tag="${release_tag:-$suggested_tag}"
 
     prepend_release_notes_header "$tmp_notes" "Release Notes - ${release_tag} (Producción)"
-    if ! ask_yes_no "¿Confirmar pase a Producción ($release_tag)?"; then exit 0; fi
+    if ! ask_yes_no "¿Confirmar pase a Producción ($release_tag)?"; then 
+        rm -f "$tmp_notes"
+        trap - EXIT
+        exit 0
+    fi
+
     ensure_clean_git
     update_branch_from_remote "main"
     git merge --ff-only staging
@@ -727,6 +758,8 @@ promote_to_prod() {
     main_sha="$(git rev-parse HEAD 2>/dev/null || true)"
     staging_sha="$(git rev-parse staging 2>/dev/null || true)"
     if [[ -n "${staging_sha:-}" && -n "${main_sha:-}" && "$main_sha" != "$staging_sha" ]]; then
+        rm -f "$tmp_notes"
+        trap - EXIT
         log_error "FF-only merge no resultó en el mismo SHA (main != staging). Abortando."
         echo "   staging: $staging_sha"
         echo "   main   : $main_sha"
@@ -741,6 +774,10 @@ promote_to_prod() {
     fi
     git push origin main
     log_success "✅ Producción actualizada ($release_tag)."
+    
+    # [FIX] CRASH FIX para Prod también
+    rm -f "$tmp_notes"
+    trap - EXIT
 
     # ==============================================================================
     # FASE 4: Disparar update-gitops-manifests para MAIN
