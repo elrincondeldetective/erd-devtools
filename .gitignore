@@ -43,3 +43,4 @@ crash.log
 .env
 devbox.lock
 .setup_completed 
+.last_golden_sha
