@@ -23,6 +23,8 @@ resync_submodules_hard() {
 
 # Helper para limpieza de ramas de release-please (NUEVO)
 cleanup_bot_branches() {
+    local mode="${1:-prompt}" # prompt | auto
+
     log_info "🧹 Buscando ramas de 'release-please' fusionadas para limpiar..."
     
     # Fetch para asegurar que la lista remota está fresca
@@ -42,6 +44,17 @@ cleanup_bot_branches() {
     echo "🔍 Se encontraron las siguientes ramas de bot fusionadas:"
     echo "$branches_to_clean"
     echo
+
+    # Modo automático (sin prompts): requerido para mantener el repo limpio al promover a staging
+    if [[ "$mode" == "auto" ]]; then
+        log_info "🧹 Limpieza automática activada (sin confirmación)."
+        for branch in $branches_to_clean; do
+            log_info "🔥 Eliminando remote: $branch"
+            git push origin --delete "$branch" || log_warn "No se pudo borrar $branch (tal vez ya no existe)."
+        done
+        log_success "🧹 Limpieza completada."
+        return 0
+    fi
 
     if ask_yes_no "¿Eliminar estas ramas remotas para mantener la limpieza?"; then
         for branch in $branches_to_clean; do
@@ -459,9 +472,11 @@ promote_to_staging() {
     # ==============================================================================
     # FASE EXTRA: BUILD LOCAL DEL GOLDEN SHA (Para garantizar el artefacto)
     # ==============================================================================
-    # Intentamos encontrar el Taskfile raíz, ya sea en el directorio actual o uno arriba
+    # Intentamos encontrar el Taskfile raíz, priorizando el WORKSPACE_ROOT (superproyecto)
     local root_taskfile=""
-    if [[ -f "${REPO_ROOT}/Taskfile.yaml" ]]; then
+    if [[ -n "${WORKSPACE_ROOT:-}" && -f "${WORKSPACE_ROOT}/Taskfile.yaml" ]]; then
+        root_taskfile="${WORKSPACE_ROOT}/Taskfile.yaml"
+    elif [[ -f "${REPO_ROOT}/Taskfile.yaml" ]]; then
         root_taskfile="${REPO_ROOT}/Taskfile.yaml"
     elif [[ -f "${REPO_ROOT}/../Taskfile.yaml" ]]; then
         root_taskfile="${REPO_ROOT}/../Taskfile.yaml"
@@ -528,7 +543,7 @@ promote_to_staging() {
         # ==============================================================================
         # FASE 5: LIMPIEZA DE RAMAS DEL BOT (Auto)
         # ==============================================================================
-        cleanup_bot_branches
+        cleanup_bot_branches auto
 
         # Disparar GitOps
         local changed_paths
@@ -627,7 +642,7 @@ promote_to_staging() {
     # ==============================================================================
     # FASE 5: LIMPIEZA DE RAMAS DEL BOT (Manual)
     # ==============================================================================
-    cleanup_bot_branches
+    cleanup_bot_branches auto
 
     # ==============================================================================
     # FASE 4: Disparar update-gitops-manifests para STAGING
