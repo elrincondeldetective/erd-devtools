@@ -24,7 +24,7 @@ resync_submodules_hard() {
 # Helper para limpieza de ramas de release-please (NUEVO)
 cleanup_bot_branches() {
     local mode="${1:-prompt}" # prompt | auto
-
+    
     log_info "🧹 Buscando ramas de 'release-please' fusionadas para limpiar..."
     
     # Fetch para asegurar que la lista remota está fresca
@@ -453,6 +453,7 @@ promote_to_staging() {
     current="$(git branch --show-current)"
     if [[ "$current" != "dev" ]]; then
         log_warn "No estás en 'dev'. Cambiando..."
+        ensure_local_tracking_branch "dev" "origin" || { log_error "No pude preparar la rama 'dev' desde 'origin/dev'."; exit 1; }
         update_branch_from_remote "dev"
     fi
 
@@ -499,6 +500,14 @@ promote_to_staging() {
     fi
 
     # ==============================================================================
+    # FASE 4 (MEJORA): Capturar paths cambiados completos (dev -> origin/staging)
+    # ==============================================================================
+    # Esto evita perder cambios cuando dev avanzó >1 commit (HEAD~1..HEAD sería incompleto).
+    git fetch origin staging >/dev/null 2>&1 || true
+    local __gitops_changed_paths
+    __gitops_changed_paths="$(git diff --name-only "origin/staging..dev" 2>/dev/null || true)"
+
+    # ==============================================================================
     # FASE 2 (HÍBRIDA): DECISIÓN MANUAL VS AUTOMÁTICA
     # ==============================================================================
     local use_remote_tagger=0
@@ -525,6 +534,7 @@ promote_to_staging() {
     # --- CAMINO A: AUTOMÁTICO (Solo Push) ---
     if [[ "$use_remote_tagger" == "1" ]]; then
         ensure_clean_git
+        ensure_local_tracking_branch "staging" "origin" || { log_error "No pude preparar la rama 'staging' desde 'origin/staging'."; exit 1; }
         update_branch_from_remote "staging"
         git merge --ff-only dev
 
@@ -547,7 +557,7 @@ promote_to_staging() {
 
         # Disparar GitOps
         local changed_paths
-        changed_paths="$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+        changed_paths="${__gitops_changed_paths:-$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)}"
         maybe_trigger_gitops_update "staging" "$staging_sha" "$changed_paths"
 
         return 0
@@ -611,6 +621,7 @@ promote_to_staging() {
     fi
 
     ensure_clean_git
+    ensure_local_tracking_branch "staging" "origin" || { log_error "No pude preparar la rama 'staging' desde 'origin/staging'."; exit 1; }
     update_branch_from_remote "staging"
     git merge --ff-only dev
 
@@ -648,7 +659,7 @@ promote_to_staging() {
     # FASE 4: Disparar update-gitops-manifests para STAGING
     # ==============================================================================
     local changed_paths
-    changed_paths="$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+    changed_paths="${__gitops_changed_paths:-$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)}"
     maybe_trigger_gitops_update "staging" "$staging_sha" "$changed_paths"
 }
 
@@ -664,8 +675,14 @@ promote_to_prod() {
     current="$(git branch --show-current)"
     if [[ "$current" != "staging" ]]; then
         log_warn "No estás en 'staging'. Cambiando..."
+        ensure_local_tracking_branch "staging" "origin" || { log_error "No pude preparar la rama 'staging' desde 'origin/staging'."; exit 1; }
         update_branch_from_remote "staging"
     fi
+
+    # Capturar paths completos para GitOps (staging -> origin/main)
+    git fetch origin main >/dev/null 2>&1 || true
+    local __gitops_changed_paths
+    __gitops_changed_paths="$(git diff --name-only "origin/main..staging" 2>/dev/null || true)"
 
     # ==============================================================================
     # FASE 3: Validar GOLDEN_SHA en STAGING antes de promover
@@ -687,6 +704,7 @@ promote_to_prod() {
 
         if ! ask_yes_no "¿Promover a PRODUCCIÓN (sin crear tag local)?"; then exit 0; fi
         ensure_clean_git
+        ensure_local_tracking_branch "main" "origin" || { log_error "No pude preparar la rama 'main' desde 'origin/main'."; exit 1; }
         update_branch_from_remote "main"
         git merge --ff-only staging
 
@@ -710,7 +728,7 @@ promote_to_prod() {
         # FASE 4: Disparar update-gitops-manifests para MAIN
         # ==============================================================================
         local changed_paths
-        changed_paths="$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+        changed_paths="${__gitops_changed_paths:-$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)}"
         maybe_trigger_gitops_update "main" "$main_sha" "$changed_paths"
 
         return 0
@@ -763,6 +781,7 @@ promote_to_prod() {
     fi
 
     ensure_clean_git
+    ensure_local_tracking_branch "main" "origin" || { log_error "No pude preparar la rama 'main' desde 'origin/main'."; exit 1; }
     update_branch_from_remote "main"
     git merge --ff-only staging
 
@@ -798,7 +817,7 @@ promote_to_prod() {
     # FASE 4: Disparar update-gitops-manifests para MAIN
     # ==============================================================================
     local changed_paths
-    changed_paths="$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+    changed_paths="${__gitops_changed_paths:-$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)}"
     maybe_trigger_gitops_update "main" "$main_sha" "$changed_paths"
 }
 
