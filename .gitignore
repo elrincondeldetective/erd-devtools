@@ -45,3 +45,4 @@ devbox.lock
 .setup_completed 
 
 .last_golden_sha.last_golden_sha
+.last_golden_sha
