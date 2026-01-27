@@ -24,7 +24,7 @@ resync_submodules_hard() {
 # Helper para limpieza de ramas de release-please (NUEVO)
 cleanup_bot_branches() {
     local mode="${1:-prompt}" # prompt | auto
-    
+
     log_info "🧹 Buscando ramas de 'release-please' fusionadas para limpiar..."
     
     # Fetch para asegurar que la lista remota está fresca
@@ -65,6 +65,154 @@ cleanup_bot_branches() {
     else
         log_warn "Omitiendo limpieza de ramas."
     fi
+}
+
+# ==============================================================================
+# HELPERS: PRs del bot + espera de workflow build + espera de tags en SHA
+# ==============================================================================
+__read_repo_version() {
+    local vf
+    vf="$(resolve_repo_version_file)"
+    [[ -f "$vf" ]] || return 1
+    cat "$vf" | tr -d '[:space:]'
+}
+
+wait_for_release_please_pr_number_or_die() {
+    # Espera a que aparezca un PR head release-please--* hacia base dev
+    local timeout="${DEVTOOLS_RP_PR_WAIT_TIMEOUT_SECONDS:-900}"
+    local interval="${DEVTOOLS_RP_PR_WAIT_POLL_SECONDS:-5}"
+    local elapsed=0
+
+    while true; do
+        local pr_number
+        pr_number="$(
+          GH_PAGER=cat gh pr list --base dev --state open --json number,headRefName --jq \
+          '.[] | select(.headRefName | startswith("release-please--")) | .number' 2>/dev/null | head -n 1
+        )"
+
+        if [[ -n "${pr_number:-}" ]]; then
+            echo "$pr_number"
+            return 0
+        fi
+
+        if (( elapsed >= timeout )); then
+            log_error "Timeout esperando PR release-please--* hacia dev."
+            return 1
+        fi
+
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+}
+
+wait_for_tag_on_sha_or_die() {
+    # Args: sha_full, pattern_regex, label
+    local sha_full="$1"
+    local pattern="$2"
+    local label="${3:-tag}"
+    local timeout="${DEVTOOLS_TAG_WAIT_TIMEOUT_SECONDS:-900}"
+    local interval="${DEVTOOLS_TAG_WAIT_POLL_SECONDS:-5}"
+    local elapsed=0
+
+    log_info "🏷️  Esperando ${label} en SHA ${sha_full:0:7} (pattern: ${pattern})..."
+
+    while true; do
+        git fetch origin --tags --force >/dev/null 2>&1 || true
+        local found
+        found="$(git tag --points-at "$sha_full" 2>/dev/null | grep -E "$pattern" | head -n 1 || true)"
+        if [[ -n "${found:-}" ]]; then
+            log_success "🏷️  Tag detectado: $found"
+            echo "$found"
+            return 0
+        fi
+
+        if (( elapsed >= timeout )); then
+            log_error "Timeout esperando ${label} en SHA ${sha_full:0:7}"
+            return 1
+        fi
+
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+}
+
+wait_for_workflow_success_on_ref_or_sha_or_die() {
+    # Args: workflow_file, sha_full, optional ref (branch/tag)
+    local wf_file="$1"
+    local sha_full="$2"
+    local ref="${3:-}"
+    local label="${4:-workflow}"
+    local timeout="${DEVTOOLS_BUILD_WAIT_TIMEOUT_SECONDS:-1800}"
+    local interval="${DEVTOOLS_BUILD_WAIT_POLL_SECONDS:-10}"
+    local elapsed=0
+
+    if [[ "${DEVTOOLS_SKIP_WAIT_BUILD:-0}" == "1" ]]; then
+        log_warn "DEVTOOLS_SKIP_WAIT_BUILD=1 -> Omitiendo espera de ${label}."
+        return 0
+    fi
+
+    if ! command -v gh >/dev/null 2>&1; then
+        log_error "No se encontró 'gh'. No puedo verificar ${label} en GitHub Actions."
+        return 1
+    fi
+
+    log_info "🏗️  Esperando ${label} (${wf_file}) en SHA ${sha_full:0:7}..."
+
+    local run_id=""
+
+    while true; do
+        if [[ -n "${ref:-}" ]]; then
+            run_id="$(
+              GH_PAGER=cat gh run list --workflow "$wf_file" --branch "$ref" -L 30 \
+                --json databaseId,headSha,status,conclusion \
+                --jq ".[] | select(.headSha==\"$sha_full\") | .databaseId" 2>/dev/null | head -n 1
+            )"
+        fi
+
+        if [[ -z "${run_id:-}" ]]; then
+            run_id="$(
+              GH_PAGER=cat gh run list --workflow "$wf_file" -L 30 \
+                --json databaseId,headSha,status,conclusion \
+                --jq ".[] | select(.headSha==\"$sha_full\") | .databaseId" 2>/dev/null | head -n 1
+            )"
+        fi
+
+        if [[ -n "${run_id:-}" ]]; then
+            break
+        fi
+
+        if (( elapsed >= timeout )); then
+            log_error "Timeout esperando que aparezca un run de ${wf_file} para SHA ${sha_full:0:7}"
+            return 1
+        fi
+
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+
+    elapsed=0
+    while true; do
+        local status conclusion
+        status="$(GH_PAGER=cat gh run view "$run_id" --json status --jq '.status' 2>/dev/null || echo "")"
+        conclusion="$(GH_PAGER=cat gh run view "$run_id" --json conclusion --jq '.conclusion' 2>/dev/null || echo "")"
+
+        if [[ "$status" == "completed" ]]; then
+            if [[ "$conclusion" == "success" ]]; then
+                log_success "🏗️  ${label} OK (run_id=$run_id)"
+                return 0
+            fi
+            log_error "${label} falló (run_id=$run_id, conclusion=$conclusion)"
+            return 1
+        fi
+
+        if (( elapsed >= timeout )); then
+            log_error "Timeout esperando a que termine ${label} (run_id=$run_id)"
+            return 1
+        fi
+
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
 }
 
 # ==============================================================================
@@ -309,136 +457,78 @@ promote_to_dev() {
     local current_branch
     current_branch="$(git branch --show-current)"
 
-    # --------------------------------------------------------------------------
-    # NUEVA LÓGICA: INTERCEPCIÓN DE PR PARA DEV (GITHUB CLI)
-    # --------------------------------------------------------------------------
-    # Si tenemos 'gh' instalado, buscamos PRs abiertos para fusionar limpiamente
-    if command -v gh &> /dev/null; then
-        echo "🔍 Buscando PRs abiertos para '$current_branch'..."
-        
-        # Obtenemos el número del PR si existe (json number)
-        local pr_number
-        pr_number="$(gh pr list --head "$current_branch" --state open --json number --jq '.[0].number')"
-
-        if [[ -n "$pr_number" ]]; then
-            banner "🤖 MODO AUTOMÁTICO DETECTADO (PR #$pr_number)"
-            echo "ℹ️  Esta rama tiene un PR abierto."
-            echo "    Podemos delegar la fusión a GitHub para:"
-            echo "    1. Esperar que pasen los Checks (CI/CD)"
-            echo "    2. Hacer Squash Merge automático"
-            echo "    3. Borrar la rama remota al terminar"
-            echo
-            
-            # Confirmación de seguridad
-            if ask_yes_no "❓ ¿Deseas auto-fusionar (Squash) el PR #$pr_number cuando pasen los checks?"; then
-                ensure_clean_git
-
-                echo "🚀 Enviando orden a GitHub..."
-                # --auto: Espera a que pasen los checks (CI/CD)
-                # --squash: Genera un solo commit limpio
-                # --delete-branch: Limpieza automática de la rama del bot/feature
-                gh pr merge "$pr_number" --auto --squash --delete-branch
-
-                echo "⏳ La orden ha sido enviada. GitHub fusionará cuando los tests pasen."
-                echo "🔄 Esperando para sincronizar el 'Golden SHA'..."
-
-                # ==============================================================================
-                # FASE 3: Espera real a que el PR quede MERGED + captura mergeCommit SHA
-                # ==============================================================================
-                local merge_sha
-                merge_sha="$(wait_for_pr_merge_and_get_sha "$pr_number")"
-
-                # Sincronizar dev exactamente con origin/dev y validar SHA
-                sync_branch_to_origin "dev" "origin"
-
-                # A veces el mergeCommit tarda un instante en reflejarse en origin/dev.
-                # Reintentamos un poco si no coincide inmediatamente.
-                local dev_sha
-                dev_sha="$(git rev-parse HEAD 2>/dev/null || true)"
-
-                if [[ -n "${merge_sha:-}" && "$dev_sha" != "$merge_sha" ]]; then
-                    log_warn "origin/dev aún no refleja el mergeCommit. Reintentando sincronización..."
-                    local tries=0
-                    local max_tries=30
-                    local interval="${DEVTOOLS_PR_MERGE_POLL_SECONDS:-5}"
-
-                    while [[ "$dev_sha" != "$merge_sha" && "$tries" -lt "$max_tries" ]]; do
-                        sleep "$interval"
-                        sync_branch_to_origin "dev" "origin"
-                        dev_sha="$(git rev-parse HEAD 2>/dev/null || true)"
-                        tries=$((tries + 1))
-                    done
-                fi
-
-                dev_sha="$(git rev-parse HEAD 2>/dev/null || true)"
-
-                # Persistir GOLDEN_SHA (fuente: PR merge)
-                if [[ -n "${merge_sha:-}" && "$dev_sha" == "$merge_sha" ]]; then
-                    write_golden_sha "$merge_sha" "source=pr_merge pr=$pr_number" || true
-                    log_success "✅ GOLDEN_SHA capturado: $merge_sha"
-                else
-                    # Si no pudimos validar contra merge_sha, igual guardamos el HEAD de dev como golden,
-                    # porque es la verdad del remoto (pero lo avisamos).
-                    write_golden_sha "$dev_sha" "source=origin/dev pr=$pr_number note=merge_sha_mismatch" || true
-                    log_warn "⚠️ No coincidió mergeCommit con origin/dev a tiempo. Guardando HEAD de dev como GOLDEN_SHA: $dev_sha"
-                fi
-
-                # ==============================================================================
-                # FASE 4: Disparar update-gitops-manifests con el GOLDEN_SHA
-                # ==============================================================================
-                local changed_paths
-                changed_paths="$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
-                maybe_trigger_gitops_update "dev" "$dev_sha" "$changed_paths"
-
-                banner "✅ PR FUSIONADO Y DEV SINCRONIZADO"
-                echo "👌 Estás en 'dev' con el Golden SHA."
-                echo "👉 Siguiente paso sugerido: git promote staging"
-                exit 0
-            fi
-        fi
-    fi
-    # --------------------------------------------------------------------------
-    # FIN NUEVA LÓGICA
-    # --------------------------------------------------------------------------
-
     if [[ "$current_branch" == "dev" || "$current_branch" == "staging" || "$current_branch" == "main" ]]; then
         log_error "Estás en '$current_branch'. Debes estar en una feature branch."
         exit 1
     fi
-    log_warn "🚧 PROMOCIÓN A DEV (Destructiva)"
-    if ! ask_yes_no "¿Aplastar 'dev' con '$current_branch'?"; then exit 0; fi
-    ensure_clean_git
 
-    # ==============================================================================
-    # FASE 4: Capturar paths cambiados ANTES del reset destructivo
-    # ==============================================================================
-    local __gitops_changed_paths
-    __gitops_changed_paths="$(git diff --name-only "origin/dev..${current_branch}" 2>/dev/null || true)"
+    if ! command -v gh >/dev/null 2>&1; then
+        log_error "Se requiere 'gh' para el flujo PR-based (git promote dev crea el PR)."
+        exit 1
+    fi
 
-    update_branch_from_remote "dev" "origin" "true"
-    git reset --hard "$current_branch"
-    git push origin dev --force
-    log_success "✅ Dev actualizado."
-    
-    # [FIX] Ahora terminamos en DEV, no en la feature branch
-    git checkout dev
+    echo "🔍 Buscando (o creando) PR para '$current_branch' -> dev..."
+    local pr_number
+    pr_number="$(GH_PAGER=cat gh pr list --head "$current_branch" --base dev --state open --json number --jq '.[0].number' 2>/dev/null || true)"
 
-    # ==============================================================================
-    # FASE 3: Guardar GOLDEN_SHA en modo destructivo (dev = feature SHA)
-    # ==============================================================================
+    if [[ -z "${pr_number:-}" ]]; then
+        ensure_clean_git
+        GH_PAGER=cat gh pr create --base dev --head "$current_branch" --fill
+        pr_number="$(GH_PAGER=cat gh pr list --head "$current_branch" --base dev --state open --json number --jq '.[0].number' 2>/dev/null || true)"
+    fi
+
+    if [[ -z "${pr_number:-}" ]]; then
+        log_error "No pude resolver el PR para '$current_branch' -> dev."
+        exit 1
+    fi
+
+    banner "🤖 PR LISTO (#$pr_number) -> dev"
+    echo "⏳ Habilitando auto-merge (espera aprobación + checks)..."
+    GH_PAGER=cat gh pr merge "$pr_number" --auto --squash --delete-branch
+
+    echo "🔄 Esperando merge del PR #$pr_number..."
+    local merge_sha
+    merge_sha="$(wait_for_pr_merge_and_get_sha "$pr_number")"
+
+    sync_branch_to_origin "dev" "origin"
+
+    # Esperar PR del bot (release-please) si existe el workflow
+    if repo_has_workflow_file "release-please"; then
+        echo
+        log_info "🤖 Esperando PR del bot release-please hacia dev..."
+        local rp_pr
+        rp_pr="$(wait_for_release_please_pr_number_or_die)"
+
+        log_info "🤖 Habilitando auto-merge para PR del bot (#$rp_pr)..."
+        # Importante: NO borramos la rama aquí; se limpia en promote staging.
+        GH_PAGER=cat gh pr merge "$rp_pr" --auto --squash
+
+        echo "🔄 Esperando merge del PR del bot #$rp_pr..."
+        local rp_merge_sha
+        rp_merge_sha="$(wait_for_pr_merge_and_get_sha "$rp_pr")"
+
+        sync_branch_to_origin "dev" "origin"
+    fi
+
+    # En este punto, el SHA “válido” es el HEAD de dev (post-bot)
     local dev_sha
     dev_sha="$(git rev-parse HEAD 2>/dev/null || true)"
-    if [[ -n "${dev_sha:-}" ]]; then
-        write_golden_sha "$dev_sha" "source=force_reset from=$current_branch" || true
-        log_success "✅ GOLDEN_SHA capturado: $dev_sha"
+
+    # Esperar build-push en dev si existe en este repo (PMBOK sí, erd-ecosystem no)
+    if repo_has_workflow_file "build-push"; then
+        wait_for_workflow_success_on_ref_or_sha_or_die "build-push.yaml" "$dev_sha" "dev" "Build and Push"
     fi
 
-    # ==============================================================================
-    # FASE 4: Disparar update-gitops-manifests con el GOLDEN_SHA
-    # ==============================================================================
-    if [[ -n "${dev_sha:-}" ]]; then
-        maybe_trigger_gitops_update "dev" "$dev_sha" "$__gitops_changed_paths"
-    fi
+    write_golden_sha "$dev_sha" "source=origin/dev post_release_please=1" || true
+    log_success "✅ GOLDEN_SHA (post-bot) capturado: $dev_sha"
+
+    local changed_paths
+    changed_paths="$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+    maybe_trigger_gitops_update "dev" "$dev_sha" "$changed_paths"
+
+    banner "✅ DEV LISTO (post-bot + build OK)"
+    echo "👉 Siguiente paso: git promote staging"
+    exit 0
 }
 
 # ==============================================================================
@@ -471,32 +561,10 @@ promote_to_staging() {
     generate_ai_prompt "dev" "origin/staging"
 
     # ==============================================================================
-    # FASE EXTRA: BUILD LOCAL DEL GOLDEN SHA (Para garantizar el artefacto)
+    # FASE EXTRA (CORREGIDA): Esperar build en CI del repo si existe (PMBOK sí, erd-ecosystem no)
     # ==============================================================================
-    # Intentamos encontrar el Taskfile raíz, priorizando el WORKSPACE_ROOT (superproyecto)
-    local root_taskfile=""
-    if [[ -n "${WORKSPACE_ROOT:-}" && -f "${WORKSPACE_ROOT}/Taskfile.yaml" ]]; then
-        root_taskfile="${WORKSPACE_ROOT}/Taskfile.yaml"
-    elif [[ -f "${REPO_ROOT}/Taskfile.yaml" ]]; then
-        root_taskfile="${REPO_ROOT}/Taskfile.yaml"
-    elif [[ -f "${REPO_ROOT}/../Taskfile.yaml" ]]; then
-        root_taskfile="${REPO_ROOT}/../Taskfile.yaml"
-    fi
-
-    if [[ -n "$root_taskfile" ]]; then
-        echo
-        log_info "🏗️  Generando BUILD local para asegurar Golden SHA (sha-$short_sha)..."
-        local task_dir
-        task_dir="$(dirname "$root_taskfile")"
-        
-        # Ejecutamos el build específicamente para este SHA usando el Taskfile encontrado
-        # Usamos subshell para no cambiar el directorio actual del script
-        (cd "$task_dir" && task app:build APP=pmbok-backend TAG="sha-$short_sha") || exit 1
-        (cd "$task_dir" && task app:build APP=pmbok-frontend TAG="sha-$short_sha") || exit 1
-        
-        log_success "✅ Builds generados con tag: sha-$short_sha"
-    else
-        log_warn "⚠️ No se encontró Taskfile.yaml en la raíz. Omitiendo Build local."
+    if repo_has_workflow_file "build-push"; then
+        wait_for_workflow_success_on_ref_or_sha_or_die "build-push.yaml" "$golden_sha" "dev" "Build and Push"
     fi
 
     # ==============================================================================
@@ -508,159 +576,50 @@ promote_to_staging() {
     __gitops_changed_paths="$(git diff --name-only "origin/staging..dev" 2>/dev/null || true)"
 
     # ==============================================================================
-    # FASE 2 (HÍBRIDA): DECISIÓN MANUAL VS AUTOMÁTICA
+    # FASE 2 (CORREGIDA): el bot crea RC tag si existe workflow tag-rc-on-staging
     # ==============================================================================
-    local use_remote_tagger=0
-    
-    # Verificamos si existe el workflow en GitHub
-    if ! should_tag_locally_for_staging; then
-        echo
-        log_info "🤖 Se detectó automatización en GitHub (tag-rc-on-staging)."
-        echo "   El sistema puede calcular el siguiente RC automáticamente."
-        echo
-        echo "   Opciones:"
-        echo "     [Y] Sí (Auto):   Solo empujar cambios. GitHub crea el tag (vX.Y.Z-rcN)."
-        echo "     [N] No (Manual): Quiero definir el tag yo mismo ahora."
-        echo
-        
-        if ask_yes_no "¿Delegar el tagging a GitHub?"; then
-            use_remote_tagger=1
-        else
-            log_warn "🖐️  Modo Manual activado: Tú tienes el control."
-            use_remote_tagger=0
-        fi
-    fi
-
-    # --- CAMINO A: AUTOMÁTICO (Solo Push) ---
-    if [[ "$use_remote_tagger" == "1" ]]; then
-        ensure_clean_git
-        ensure_local_tracking_branch "staging" "origin" || { log_error "No pude preparar la rama 'staging' desde 'origin/staging'."; exit 1; }
-        update_branch_from_remote "staging"
-        git merge --ff-only dev
-
-        # Validar SHA
-        local staging_sha dev_sha
-        staging_sha="$(git rev-parse HEAD 2>/dev/null || true)"
-        dev_sha="$(git rev-parse dev 2>/dev/null || true)"
-        if [[ -n "${dev_sha:-}" && -n "${staging_sha:-}" && "$staging_sha" != "$dev_sha" ]]; then
-            log_error "FF-only merge no resultó en el mismo SHA (staging != dev). Abortando."
-            exit 1
-        fi
-
-        git push origin staging
-        log_success "✅ Staging actualizado. (GitHub Actions creará el tag RC en breve)."
-
-        # ==============================================================================
-        # FASE 5: LIMPIEZA DE RAMAS DEL BOT (Auto)
-        # ==============================================================================
-        cleanup_bot_branches auto
-
-        # Disparar GitOps
-        local changed_paths
-        changed_paths="${__gitops_changed_paths:-$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)}"
-        maybe_trigger_gitops_update "staging" "$staging_sha" "$changed_paths"
-
-        return 0
-    fi
-    
-    # --- CAMINO B: MANUAL (El código original continúa aquí abajo) ---
-    
-    local tmp_notes
-    tmp_notes="$(mktemp -t release-notes.XXXXXX.md)"
-    trap 'rm -f "$tmp_notes"' EXIT
-    
-    capture_release_notes "$tmp_notes"
-    [[ ! -s "$tmp_notes" ]] && { log_error "Notas vacías."; exit 1; }
-    
-    # 1. Obtener versión base desde archivo VERSION (fuente de verdad)
-    local version_file
-    version_file="$(resolve_repo_version_file)"
-
-    local base_ver
-    if [[ -f "$version_file" ]]; then
-        base_ver=$(cat "$version_file" | tr -d '[:space:]')
-        log_info "📄 Versión actual en archivo: $base_ver"
-    else
-        base_ver=$(get_current_version) # Fallback
-    fi
-
-    # 2. Calcular SIGUIENTE versión basada en commits
-    local next_ver="$base_ver"
-    if [[ "${DEVTOOLS_SUGGEST_VERSION_FROM_COMMITS:-0}" == "1" ]]; then
-        if command -v calculate_next_version >/dev/null; then
-            next_ver=$(calculate_next_version "$base_ver")
-            if [[ "$next_ver" != "$base_ver" ]]; then
-                log_info "🧠 Cálculo automático: $base_ver -> $next_ver (según commits)"
-            else
-                log_info "🧠 Cálculo automático: Sin cambios mayores detectados."
-            fi
-        fi
-    else
-        log_info "🤖 Versionado gestionado por GitHub: usando $base_ver desde VERSION (sin recalcular)."
-    fi
-
-    # 3. Calcular RC sobre la versión objetivo
-    local rc_num
-    rc_num="$(next_rc_number "$next_ver")"
-    local suggested_tag="v${next_ver}-rc${rc_num}"
-    
-    # 4. Opción de Override Manual
-    echo
-    log_info "🔖 Tag sugerido: $suggested_tag"
-    local rc_tag=""
-    read -r -p "Presiona ENTER para usar '$suggested_tag' o escribe tu versión manual: " rc_tag
-    rc_tag="${rc_tag:-$suggested_tag}"
-
-    prepend_release_notes_header "$tmp_notes" "Release Notes - ${rc_tag} (Staging)"
-    
-    if ! ask_yes_no "¿Desplegar a STAGING con tag $rc_tag?"; then 
-        # Si el usuario cancela, limpiamos el trap para no borrar archivos random
-        rm -f "$tmp_notes"
-        trap - EXIT
-        exit 0
-    fi
-
     ensure_clean_git
     ensure_local_tracking_branch "staging" "origin" || { log_error "No pude preparar la rama 'staging' desde 'origin/staging'."; exit 1; }
     update_branch_from_remote "staging"
     git merge --ff-only dev
 
-    # ==============================================================================
-    # FASE 3: Asegurar mismo SHA (staging == dev == golden)
-    # ==============================================================================
+    # Validar SHA
     local staging_sha dev_sha
     staging_sha="$(git rev-parse HEAD 2>/dev/null || true)"
     dev_sha="$(git rev-parse dev 2>/dev/null || true)"
     if [[ -n "${dev_sha:-}" && -n "${staging_sha:-}" && "$staging_sha" != "$dev_sha" ]]; then
-        # Limpieza antes de salir por error
-        rm -f "$tmp_notes"
-        trap - EXIT
         log_error "FF-only merge no resultó en el mismo SHA (staging != dev). Abortando."
-        echo "   dev    : $dev_sha"
-        echo "   staging: $staging_sha"
         exit 1
     fi
 
-    git tag -a "$rc_tag" -F "$tmp_notes"
     git push origin staging
-    git push origin "$rc_tag"
-    log_success "✅ Staging actualizado ($rc_tag)."
+    log_success "✅ Staging actualizado."
 
-    # [FIX] CRASH FIX: Limpiamos archivo y quitamos trap ANTES de que la variable local muera
-    rm -f "$tmp_notes"
-    trap - EXIT
+    # Esperar RC tag + build del tag (solo si este repo tiene el tagger)
+    if repo_has_workflow_file "tag-rc-on-staging"; then
+        local ver
+        ver="$(__read_repo_version 2>/dev/null || true)"
+        if [[ -n "${ver:-}" ]]; then
+            local rc_pattern="^v${ver}-rc[0-9]+$"
+            local rc_tag
+            rc_tag="$(wait_for_tag_on_sha_or_die "$staging_sha" "$rc_pattern" "RC tag")"
+            if repo_has_workflow_file "build-push"; then
+                wait_for_workflow_success_on_ref_or_sha_or_die "build-push.yaml" "$staging_sha" "$rc_tag" "Build and Push (tag RC)"
+            fi
+        fi
+    fi
 
     # ==============================================================================
-    # FASE 5: LIMPIEZA DE RAMAS DEL BOT (Manual)
+    # FASE 5: LIMPIEZA DE RAMAS DEL BOT (Auto)
     # ==============================================================================
     cleanup_bot_branches auto
 
-    # ==============================================================================
-    # FASE 4: Disparar update-gitops-manifests para STAGING
-    # ==============================================================================
+    # Disparar GitOps
     local changed_paths
     changed_paths="${__gitops_changed_paths:-$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)}"
     maybe_trigger_gitops_update "staging" "$staging_sha" "$changed_paths"
+
+    return 0
 }
 
 # ==============================================================================
@@ -722,7 +681,21 @@ promote_to_prod() {
         fi
 
         git push origin main
-        log_success "✅ Producción actualizada. (Tag final lo creará GitHub Actions)"
+        log_success "✅ Producción actualizada."
+
+        # Esperar tag final + build del tag (solo si este repo tiene el tagger)
+        if repo_has_workflow_file "tag-final-on-main"; then
+            local ver
+            ver="$(__read_repo_version 2>/dev/null || true)"
+            if [[ -n "${ver:-}" ]]; then
+                local final_pattern="^v${ver}$"
+                local final_tag
+                final_tag="$(wait_for_tag_on_sha_or_die "$main_sha" "$final_pattern" "Final tag")"
+                if repo_has_workflow_file "build-push"; then
+                    wait_for_workflow_success_on_ref_or_sha_or_die "build-push.yaml" "$main_sha" "$final_tag" "Build and Push (tag final)"
+                fi
+            fi
+        fi
 
         # ==============================================================================
         # FASE 4: Disparar update-gitops-manifests para MAIN
