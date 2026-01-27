@@ -15,6 +15,15 @@
 # - promote/golden-sha.sh
 # - promote/gitops-integration.sh
 
+# [FIX] Helper visual para evitar error "orden no encontrada"
+banner() {
+    echo ""
+    echo "=============================================================================="
+    echo "   $1"
+    echo "=============================================================================="
+    echo ""
+}
+
 # [FIX] Solución de raíz: re-sincronizar submódulos para evitar estados dirty falsos
 resync_submodules_hard() {
   git submodule sync --recursive >/dev/null 2>&1 || true
@@ -24,7 +33,7 @@ resync_submodules_hard() {
 # Helper para limpieza de ramas de release-please (NUEVO)
 cleanup_bot_branches() {
     local mode="${1:-prompt}" # prompt | auto
-
+    
     log_info "🧹 Buscando ramas de 'release-please' fusionadas para limpiar..."
     
     # Fetch para asegurar que la lista remota está fresca
