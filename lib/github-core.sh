@@ -20,6 +20,56 @@ ensure_gh_cli() {
 }
 
 # ==============================================================================
+# 1.1 FASE 3 (NUEVO): HELPERS PARA MERGE AUTOMÁTICO Y GOLDEN SHA
+# ==============================================================================
+# Objetivo:
+# - Esperar de forma robusta a que un PR quede mergeado cuando usamos `gh pr merge --auto`.
+# - Obtener el mergeCommit SHA (golden candidate).
+#
+# Variables (defaults pueden venir de core/config.sh):
+# - DEVTOOLS_PR_MERGE_TIMEOUT_SECONDS (default 900)
+# - DEVTOOLS_PR_MERGE_POLL_SECONDS (default 5)
+wait_for_pr_merge_and_get_sha() {
+    local pr_number="$1"
+    local timeout="${DEVTOOLS_PR_MERGE_TIMEOUT_SECONDS:-900}"
+    local interval="${DEVTOOLS_PR_MERGE_POLL_SECONDS:-5}"
+    local elapsed=0
+
+    ensure_gh_cli
+
+    while true; do
+        local merged state
+        merged="$(GH_PAGER=cat gh pr view "$pr_number" --json merged --jq '.merged' 2>/dev/null || echo "false")"
+        state="$(GH_PAGER=cat gh pr view "$pr_number" --json state --jq '.state' 2>/dev/null || echo "")"
+
+        if [[ "$merged" == "true" ]]; then
+            local merge_sha
+            merge_sha="$(GH_PAGER=cat gh pr view "$pr_number" --json mergeCommit --jq '.mergeCommit.oid' 2>/dev/null || echo "")"
+
+            if [[ -n "${merge_sha:-}" && "${merge_sha:-null}" != "null" ]]; then
+                echo "$merge_sha"
+                return 0
+            fi
+            # Si está merged pero no podemos leer mergeCommit, seguimos intentando un poco.
+        else
+            # Si el PR se cerró sin merge, abortamos.
+            if [[ "$state" == "CLOSED" ]]; then
+                log_error "El PR #$pr_number está CLOSED y no fue mergeado."
+                return 1
+            fi
+        fi
+
+        if (( elapsed >= timeout )); then
+            log_error "Timeout esperando a que el PR #$pr_number sea mergeado."
+            return 1
+        fi
+
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+}
+
+# ==============================================================================
 # 2. OPERACIONES DE PULL REQUESTS
 # ==============================================================================
 

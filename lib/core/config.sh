@@ -77,6 +77,16 @@ export PR_BASE_BRANCH="${PR_BASE_BRANCH:-dev}"                    # PR siempre h
 export POST_PUSH_FLOW="${POST_PUSH_FLOW:-true}"
 
 # ==============================================================================
+# FASE 3 (NUEVO): DEFAULTS PARA GOLDEN SHA (Checks + Sync)
+# ==============================================================================
+# Objetivo:
+# - Permitir parametrizar la espera/polling del merge automático del PR.
+# - Mantener comportamiento seguro por defecto (no permitir mismatch sin override).
+export DEVTOOLS_PR_MERGE_TIMEOUT_SECONDS="${DEVTOOLS_PR_MERGE_TIMEOUT_SECONDS:-900}"
+export DEVTOOLS_PR_MERGE_POLL_SECONDS="${DEVTOOLS_PR_MERGE_POLL_SECONDS:-5}"
+export DEVTOOLS_ALLOW_GOLDEN_SHA_MISMATCH="${DEVTOOLS_ALLOW_GOLDEN_SHA_MISMATCH:-0}"
+
+# ==============================================================================
 # 4. DETERMINACIÓN DE MODO (SIMPLE vs PRO)
 # ==============================================================================
 

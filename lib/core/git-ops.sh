@@ -79,6 +79,61 @@ detect_workspace_root() {
 }
 
 # ==============================================================================
+# 2.1 FASE 3 (NUEVO): HELPERS PARA GOLDEN SHA / RAMAS TRACKING
+# ==============================================================================
+# Objetivo:
+# - Poder sincronizar ramas locales con su remoto aunque NO existan localmente.
+# - Evitar estados "a medias" cuando el SHA golden se toma de origin/<branch>.
+branch_exists_remote() {
+    local branch="$1"
+    local remote="${2:-origin}"
+    git show-ref --verify --quiet "refs/remotes/${remote}/${branch}"
+}
+
+ensure_local_branch_tracks_remote() {
+    local branch="$1"
+    local remote="${2:-origin}"
+
+    # Siempre traer refs frescas (silencioso)
+    git fetch "$remote" "$branch" >/dev/null 2>&1 || true
+
+    # Si ya existe localmente, OK
+    if git show-ref --verify --quiet "refs/heads/${branch}"; then
+        return 0
+    fi
+
+    # Si existe en remoto, creamos local tracking
+    if branch_exists_remote "$branch" "$remote"; then
+        git checkout -b "$branch" "${remote}/${branch}" >/dev/null 2>&1 || return 1
+        return 0
+    fi
+
+    return 1
+}
+
+# Sincroniza la rama local para que coincida EXACTAMENTE con el remoto (golden truth)
+sync_branch_hard_to_remote() {
+    local branch="$1"
+    local remote="${2:-origin}"
+
+    ensure_clean_git
+
+    ensure_local_branch_tracks_remote "$branch" "$remote" || {
+        echo "❌ No pude preparar la rama '$branch' desde '$remote/$branch'." >&2
+        return 1
+    }
+
+    git checkout "$branch" >/dev/null 2>&1 || return 1
+
+    # Aseguramos refs frescas
+    git fetch "$remote" "$branch" >/dev/null 2>&1 || true
+
+    # Hard reset a remoto (verdad canónica)
+    git reset --hard "${remote}/${branch}" >/dev/null 2>&1 || true
+    return 0
+}
+
+# ==============================================================================
 # 3. OPERACIONES DE SUBMÓDULOS
 # ==============================================================================
 
