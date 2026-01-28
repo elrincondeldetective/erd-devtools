@@ -18,6 +18,11 @@ wait_for_release_please_pr_number_or_die() {
     local interval="${DEVTOOLS_RP_PR_WAIT_POLL_SECONDS:-5}"
     local elapsed=0
 
+    # Si timeout=0, no esperamos (comportamiento útil para repos donde el bot puede no abrir PR)
+    if [[ "${timeout}" == "0" ]]; then
+        return 1
+    fi
+
     while true; do
         local pr_number
         pr_number="$(
@@ -25,13 +30,14 @@ wait_for_release_please_pr_number_or_die() {
           '.[] | select(.headRefName | startswith("release-please--")) | .number' 2>/dev/null | head -n 1
         )"
 
-        if [[ -n "${pr_number:-}" ]]; then
+        # Solo aceptamos números (evita propagar mensajes/ruido como "pr_number")
+        if [[ "${pr_number:-}" =~ ^[0-9]+$ ]]; then
             echo "$pr_number"
             return 0
         fi
 
         if (( elapsed >= timeout )); then
-            log_error "Timeout esperando PR release-please--* hacia dev."
+            log_error "Timeout esperando PR release-please--* hacia dev." >&2
             return 1
         fi
 
@@ -100,52 +106,4 @@ wait_for_workflow_success_on_ref_or_sha_or_die() {
             run_id="$(
               GH_PAGER=cat gh run list --workflow "$wf_file" --branch "$ref" -L 30 \
                 --json databaseId,headSha,status,conclusion \
-                --jq ".[] | select(.headSha==\"$sha_full\") | .databaseId" 2>/dev/null | head -n 1
-            )"
-        fi
-
-        if [[ -z "${run_id:-}" ]]; then
-            run_id="$(
-              GH_PAGER=cat gh run list --workflow "$wf_file" -L 30 \
-                --json databaseId,headSha,status,conclusion \
-                --jq ".[] | select(.headSha==\"$sha_full\") | .databaseId" 2>/dev/null | head -n 1
-            )"
-        fi
-
-        if [[ -n "${run_id:-}" ]]; then
-            break
-        fi
-
-        if (( elapsed >= timeout )); then
-            log_error "Timeout esperando que aparezca un run de ${wf_file} para SHA ${sha_full:0:7}"
-            return 1
-        fi
-
-        sleep "$interval"
-        elapsed=$((elapsed + interval))
-    done
-
-    elapsed=0
-    while true; do
-        local status conclusion
-        status="$(GH_PAGER=cat gh run view "$run_id" --json status --jq '.status' 2>/dev/null || echo "")"
-        conclusion="$(GH_PAGER=cat gh run view "$run_id" --json conclusion --jq '.conclusion' 2>/dev/null || echo "")"
-
-        if [[ "$status" == "completed" ]]; then
-            if [[ "$conclusion" == "success" ]]; then
-                log_success "🏗️  ${label} OK (run_id=$run_id)"
-                return 0
-            fi
-            log_error "${label} falló (run_id=$run_id, conclusion=$conclusion)"
-            return 1
-        fi
-
-        if (( elapsed >= timeout )); then
-            log_error "Timeout esperando a que termine ${label} (run_id=$run_id)"
-            return 1
-        fi
-
-        sleep "$interval"
-        elapsed=$((elapsed + interval))
-    done
-}
+                --jq ".[] | select(.headSha==\"$sha_full\") | .databaseId" 2>/dev/nu_

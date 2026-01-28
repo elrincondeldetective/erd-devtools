@@ -40,6 +40,107 @@ __resolve_promote_script() {
 }
 
 # ------------------------------------------------------------------------------
+# Espera aprobación del PR (control humano)
+# - Requiere al menos 1 review "APPROVED" (reviewDecision=APPROVED).
+#
+# Overrides:
+# - DEVTOOLS_PR_APPROVAL_TIMEOUT_SECONDS=0  -> 0 = sin timeout (default).
+# - DEVTOOLS_PR_APPROVAL_POLL_SECONDS=10    -> intervalo polling.
+# - DEVTOOLS_SKIP_PR_APPROVAL_WAIT=1        -> bypass (no recomendado).
+# ------------------------------------------------------------------------------
+wait_for_pr_approval_or_die() {
+    local pr_number="$1"
+    local timeout="${DEVTOOLS_PR_APPROVAL_TIMEOUT_SECONDS:-0}"
+    local interval="${DEVTOOLS_PR_APPROVAL_POLL_SECONDS:-10}"
+    local elapsed=0
+
+    if [[ "${DEVTOOLS_SKIP_PR_APPROVAL_WAIT:-0}" == "1" ]]; then
+        log_warn "DEVTOOLS_SKIP_PR_APPROVAL_WAIT=1 -> Omitiendo espera de aprobación del PR."
+        return 0
+    fi
+
+    if ! command -v gh >/dev/null 2>&1; then
+        log_error "Se requiere 'gh' para verificar aprobación del PR."
+        return 1
+    fi
+
+    log_info "⏳ Esperando aprobación del PR #$pr_number (reviewDecision=APPROVED)..."
+
+    while true; do
+        local state decision merged_at
+        state="$(GH_PAGER=cat gh pr view "$pr_number" --json state --jq '.state // ""' 2>/dev/null || echo "")"
+        decision="$(GH_PAGER=cat gh pr view "$pr_number" --json reviewDecision --jq '.reviewDecision // ""' 2>/dev/null || echo "")"
+        merged_at="$(GH_PAGER=cat gh pr view "$pr_number" --json mergedAt --jq '.mergedAt // ""' 2>/dev/null || echo "")"
+
+        # ✅ Si ya está mergeado, no tiene sentido esperar aprobación.
+        if [[ -n "${merged_at:-}" && "${merged_at:-null}" != "null" ]]; then
+            log_success "✅ PR #$pr_number ya está MERGED (mergedAt=$merged_at)."
+            return 0
+        fi
+
+        if [[ "$decision" == "APPROVED" ]]; then
+            log_success "✅ PR #$pr_number aprobado."
+            return 0
+        fi
+
+        if [[ "$state" == "CLOSED" ]]; then
+            log_error "El PR #$pr_number está CLOSED y no fue aprobado/mergeado. Abortando."
+            return 1
+        fi
+
+        if (( timeout > 0 && elapsed >= timeout )); then
+            log_error "Timeout esperando aprobación del PR #$pr_number."
+            return 1
+        fi
+
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+}
+
+# ------------------------------------------------------------------------------
+# Espera opcional por PR de release-please.
+# - Devuelve el PR number si aparece.
+# - Devuelve vacío si no aparece (sin error fatal).
+#
+# Overrides:
+# - DEVTOOLS_RP_PR_WAIT_TIMEOUT_SECONDS=60  -> tiempo máximo de espera (0 = no esperar).
+# - DEVTOOLS_RP_PR_WAIT_POLL_SECONDS=2      -> intervalo polling.
+# ------------------------------------------------------------------------------
+wait_for_release_please_pr_number_optional() {
+    local timeout="${DEVTOOLS_RP_PR_WAIT_TIMEOUT_SECONDS:-60}"
+    local interval="${DEVTOOLS_RP_PR_WAIT_POLL_SECONDS:-2}"
+    local elapsed=0
+
+    # 0 = no esperar, retorno vacío
+    if [[ "${timeout}" == "0" ]]; then
+        echo ""
+        return 0
+    fi
+
+    while true; do
+        local pr_number
+        pr_number="$(
+          GH_PAGER=cat gh pr list --base dev --state open --json number,headRefName --jq \
+          '.[] | select(.headRefName | startswith("release-please--")) | .number' 2>/dev/null | head -n 1
+        )"
+
+        if [[ "${pr_number:-}" =~ ^[0-9]+$ ]]; then
+            echo "$pr_number"
+            return 0
+        fi
+
+        if (( elapsed >= timeout )); then
+            echo ""
+            return 0
+        fi
+
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+}
+
+# ------------------------------------------------------------------------------
 # Monitor: espera merges/builds y captura GOLDEN_SHA sin tocar tu worktree
 # Uso interno: git promote _dev-monitor <feature_pr_number> [feature_branch]
 # ------------------------------------------------------------------------------
@@ -51,6 +152,14 @@ promote_dev_monitor() {
 
     log_info "🧠 DEV monitor iniciado (PR #${feature_pr}${feature_branch:+, branch=$feature_branch})"
 
+    # 0) Esperar aprobación humana antes de permitir merge
+    wait_for_pr_approval_or_die "$feature_pr" || return 1
+
+    # 1) Habilitar auto-merge SOLO cuando ya está aprobado
+    log_info "🤖 PR aprobado. Habilitando auto-merge (checks + merge)..."
+    GH_PAGER=cat gh pr merge "$feature_pr" --auto --squash --delete-branch
+
+    # 2) Esperar merge real
     log_info "🔄 Esperando merge del PR #$feature_pr..."
     local merge_sha
     merge_sha="$(wait_for_pr_merge_and_get_sha "$feature_pr")"
@@ -63,10 +172,11 @@ promote_dev_monitor() {
     # Esperar PR del bot (release-please) si existe el workflow.
     # Importante: release-please puede decidir NO abrir PR si no hay bump; en ese caso seguimos.
     if repo_has_workflow_file "release-please"; then
-        log_info "🤖 Esperando PR del bot release-please hacia dev..."
-        rp_pr="$(wait_for_release_please_pr_number_or_die 2>/dev/null || true)"
+        log_info "🤖 Esperando PR del bot release-please hacia dev (opcional)..."
+        rp_pr="$(wait_for_release_please_pr_number_optional)"
 
-        if [[ -n "${rp_pr:-}" ]]; then
+        # ✅ SOLO si es numérico
+        if [[ "${rp_pr:-}" =~ ^[0-9]+$ ]]; then
             post_rp=1
             log_info "🤖 Habilitando auto-merge para PR del bot (#$rp_pr)..."
             # Importante: NO borramos la rama aquí; se limpia en promote staging.
@@ -76,7 +186,7 @@ promote_dev_monitor() {
             rp_merge_sha="$(wait_for_pr_merge_and_get_sha "$rp_pr")"
             log_success "PR bot mergeado: ${rp_merge_sha:0:7}"
         else
-            log_warn "🤷 No se detectó PR release-please--* en la ventana de espera. Continuando."
+            log_warn "🤷 No se detectó PR release-please--* (o timeout). Continuando."
         fi
     fi
 
@@ -142,57 +252,7 @@ promote_to_dev() {
     fi
 
     banner "🤖 PR LISTO (#$pr_number) -> dev"
-    echo "⏳ Habilitando auto-merge (espera aprobación + checks)..."
-    GH_PAGER=cat gh pr merge "$pr_number" --auto --squash --delete-branch
 
-    echo "🔄 Esperando merge del PR #$pr_number..."
-    local merge_sha
-    merge_sha="$(wait_for_pr_merge_and_get_sha "$pr_number")"
-
-    sync_branch_to_origin "dev" "origin"
-
-    # Esperar PR del bot (release-please) si existe el workflow.
-    # Importante: release-please puede decidir NO abrir PR si no hay bump; en ese caso seguimos.
-    if repo_has_workflow_file "release-please"; then
-        echo
-        log_info "🤖 Esperando PR del bot release-please hacia dev..."
-        local rp_pr
-        rp_pr="$(wait_for_release_please_pr_number_or_die 2>/dev/null || true)"
-
-        if [[ -n "${rp_pr:-}" ]]; then
-            log_info "🤖 Habilitando auto-merge para PR del bot (#$rp_pr)..."
-            # Importante: NO borramos la rama aquí; se limpia en promote staging.
-            GH_PAGER=cat gh pr merge "$rp_pr" --auto --squash
-
-            echo "🔄 Esperando merge del PR del bot #$rp_pr..."
-            local rp_merge_sha
-            rp_merge_sha="$(wait_for_pr_merge_and_get_sha "$rp_pr")"
-
-            sync_branch_to_origin "dev" "origin"
-        else
-            log_warn "🤷 No se detectó PR release-please--* en la ventana de espera. Continuando."
-        fi
-    fi
-
-    # En este punto, el SHA “válido” es el HEAD de dev (post-bot si existió)
-    local dev_sha
-    dev_sha="$(git rev-parse HEAD 2>/dev/null || true)"
-
-    # Esperar build-push en dev si existe en este repo (PMBOK sí, erd-ecosystem no)
-    if repo_has_workflow_file "build-push"; then
-        wait_for_workflow_success_on_ref_or_sha_or_die "build-push.yaml" "$dev_sha" "dev" "Build and Push"
-    fi
-
-    write_golden_sha "$dev_sha" "source=origin/dev post_release_please=1" || true
-    log_success "✅ GOLDEN_SHA (post-bot) capturado: $dev_sha"
-
-    local changed_paths
-    changed_paths="$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
-    maybe_trigger_gitops_update "dev" "$dev_sha" "$changed_paths"
-
-    banner "✅ DEV LISTO (post-bot + build OK)"
-    echo "👉 Siguiente paso: git promote staging"
-    exit 0
     # Default: async (libera terminal).
     # Compat: DEVTOOLS_PROMOTE_DEV_SYNC=1 vuelve al modo bloqueante.
     local sync="${DEVTOOLS_PROMOTE_DEV_SYNC:-0}"
@@ -215,6 +275,13 @@ promote_to_dev() {
     else
         ( "$promote_cmd" _dev-monitor "$pr_number" "$current_branch" >"$log_file" 2>&1 ) &
     fi
+
+    local pr_url
+    pr_url="$(GH_PAGER=cat gh pr view "$pr_number" --json url --jq '.url // ""' 2>/dev/null || echo "")"
+
+    banner "✅ PR CREADO (pendiente de aprobación)"
+    [[ -n "${pr_url:-}" ]] && echo "🔗 PR: $pr_url"
+    echo
 
     banner "✅ DEV EN PROCESO (monitor en background)"
     echo "📄 Log del monitor: $log_file"
