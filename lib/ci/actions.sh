@@ -5,6 +5,70 @@
 # LÓGICA DE ACCIONES (Creación de PRs, Pipelines complejos, etc.)
 # ==============================================================================
 
+# ==============================================================================
+# VISUALIZACIÓN DE WORKFLOWS (Live Logs)
+# ==============================================================================
+
+# Busca el último run en una rama y hace streaming de los logs a la terminal.
+# Retorna 0 si el workflow fue exitoso, 1 si falló.
+wait_and_watch_workflow() {
+    local branch="$1"
+    local workflow_name="${2:-}" # Opcional: filtrar por nombre de workflow
+
+    # Verificación de dependencia
+    if ! command -v gh &> /dev/null; then
+        echo "⚠️  GitHub CLI (gh) no instalado. No puedo mostrar logs en vivo."
+        # No bloqueamos el flujo si falta la herramienta visual, pero avisamos.
+        return 0
+    fi
+
+    echo "⏳ Buscando workflows activos en '$branch'..."
+    
+    # Damos un momento para que GitHub registre el evento del push
+    sleep 5
+
+    # Buscamos el ID del último run en ejecución o encolado
+    local run_id=""
+    local retries=5
+    
+    while [[ $retries -gt 0 ]]; do
+        if [[ -n "$workflow_name" ]]; then
+            run_id="$(gh run list --branch "$branch" --workflow "$workflow_name" --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)"
+        else
+            run_id="$(gh run list --branch "$branch" --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)"
+        fi
+        
+        if [[ -n "$run_id" ]]; then
+            break
+        fi
+        
+        echo "   ... esperando que inicie el workflow ($retries)..."
+        sleep 3
+        retries=$((retries - 1))
+    done
+
+    if [[ -z "$run_id" ]]; then
+        echo "⚠️  No se detectó ningún workflow corriendo en '$branch' tras varios intentos."
+        echo "    (Puede que no haya workflow configurado o tardó mucho en iniciar)."
+        return 0
+    fi
+
+    echo "📺 Conectando con GitHub Actions (Run ID: $run_id)..."
+    echo "════════════════════════════════════════════════════"
+    
+    # gh run watch hace streaming de los logs.
+    # --exit-status hace que el comando local devuelva el mismo código de salida que el workflow remoto.
+    if gh run watch "$run_id" --exit-status; then
+        echo "════════════════════════════════════════════════════"
+        echo "✅ Workflow finalizado exitosamente."
+        return 0
+    else
+        echo "════════════════════════════════════════════════════"
+        echo "❌ El workflow falló."
+        return 1
+    fi
+}
+
 # Helper: Creación de PR
 # Invoca al script `git-pr.sh` pasando la rama base correcta.
 do_create_pr_flow() {
