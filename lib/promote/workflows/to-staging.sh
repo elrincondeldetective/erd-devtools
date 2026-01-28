@@ -131,6 +131,21 @@ promote_to_staging() {
         # ==============================================================================
         cleanup_bot_branches auto
 
+        # ==============================================================================
+        # FASE EXTRA: Prompt para registrar cambios incluidos en esta integración a STAGING
+        # (Se guarda en .git para NO ensuciar el working tree)
+        # ==============================================================================
+        if is_tty; then
+            log_info "📝 Registra/Anota los cambios incluidos en esta integración a STAGING..."
+            local gd
+            gd="$(git rev-parse --git-dir 2>/dev/null || echo ".git")"
+            [[ "$gd" != /* ]] && gd="${REPO_ROOT}/${gd}"
+            mkdir -p "${gd}/devtools/staging-notes" >/dev/null 2>&1 || true
+            local notes_file="${gd}/devtools/staging-notes/${staging_sha:0:7}-$(date -u '+%Y%m%dT%H%M%SZ').md"
+            capture_release_notes "$notes_file"
+            log_success "📝 Notas guardadas en: $notes_file"
+        fi
+
         # Disparar GitOps
         local changed_paths
         changed_paths="${__gitops_changed_paths:-$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)}"
@@ -231,6 +246,21 @@ promote_to_staging() {
     # FASE 5: LIMPIEZA DE RAMAS DEL BOT (Auto)
     # ==============================================================================
     cleanup_bot_branches auto
+
+    # ==============================================================================
+    # FASE EXTRA: Prompt para registrar cambios incluidos en esta integración a STAGING
+    # (Se guarda en .git para NO ensuciar el working tree)
+    # ==============================================================================
+    if is_tty; then
+        log_info "📝 Registra/Anota los cambios incluidos en esta integración a STAGING..."
+        local gd
+        gd="$(git rev-parse --git-dir 2>/dev/null || echo ".git")"
+        [[ "$gd" != /* ]] && gd="${REPO_ROOT}/${gd}"
+        mkdir -p "${gd}/devtools/staging-notes" >/dev/null 2>&1 || true
+        local notes_file="${gd}/devtools/staging-notes/${staging_sha:0:7}-$(date -u '+%Y%m%dT%H%M%SZ').md"
+        capture_release_notes "$notes_file"
+        log_success "📝 Notas guardadas en: $notes_file"
+    fi
 
     # Disparar GitOps
     local changed_paths
