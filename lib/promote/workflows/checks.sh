@@ -106,4 +106,52 @@ wait_for_workflow_success_on_ref_or_sha_or_die() {
             run_id="$(
               GH_PAGER=cat gh run list --workflow "$wf_file" --branch "$ref" -L 30 \
                 --json databaseId,headSha,status,conclusion \
-                --jq ".[] | select(.headSha==\"$sha_full\") | .databaseId" 2>/dev/nu_
+                --jq ".[] | select(.headSha==\"$sha_full\") | .databaseId" 2>/dev/null | head -n 1
+            )"
+        fi
+
+        if [[ -z "${run_id:-}" ]]; then
+            run_id="$(
+              GH_PAGER=cat gh run list --workflow "$wf_file" -L 30 \
+                --json databaseId,headSha,status,conclusion \
+                --jq ".[] | select(.headSha==\"$sha_full\") | .databaseId" 2>/dev/null | head -n 1
+            )"
+        fi
+
+        if [[ -n "${run_id:-}" ]]; then
+            break
+        fi
+
+        if (( elapsed >= timeout )); then
+            log_error "Timeout esperando que aparezca un run de ${wf_file} para SHA ${sha_full:0:7}"
+            return 1
+        fi
+
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+
+    elapsed=0
+    while true; do
+        local status conclusion
+        status="$(GH_PAGER=cat gh run view "$run_id" --json status --jq '.status' 2>/dev/null || echo "")"
+        conclusion="$(GH_PAGER=cat gh run view "$run_id" --json conclusion --jq '.conclusion' 2>/dev/null || echo "")"
+
+        if [[ "$status" == "completed" ]]; then
+            if [[ "$conclusion" == "success" ]]; then
+                log_success "🏗️  ${label} OK (run_id=$run_id)"
+                return 0
+            fi
+            log_error "${label} falló (run_id=$run_id, conclusion=$conclusion)"
+            return 1
+        fi
+
+        if (( elapsed >= timeout )); then
+            log_error "Timeout esperando a que termine ${label} (run_id=$run_id)"
+            return 1
+        fi
+
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+}
