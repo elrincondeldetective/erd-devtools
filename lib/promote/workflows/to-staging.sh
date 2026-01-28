@@ -19,12 +19,13 @@ promote_to_staging() {
 
     local current
     current="$(git branch --show-current)"
-    if [[ "$current" != "dev" ]]; then
+    # Siempre trabajamos sobre un dev actualizado desde origin (HEAD real)
+    ensure_local_tracking_branch "dev" "origin" || { log_error "No pude preparar la rama 'dev' desde 'origin/dev'."; exit 1; }
+    if [[ "$(git branch --show-current)" != "dev" ]]; then
         log_warn "No estás en 'dev'. Cambiando..."
-        ensure_local_tracking_branch "dev" "origin" || { log_error "No pude preparar la rama 'dev' desde 'origin/dev'."; exit 1; }
-        update_branch_from_remote "dev"
+        git checkout dev >/dev/null 2>&1 || exit 1
     fi
-
+    update_branch_from_remote "dev"
     # ==============================================================================
     # FASE 3: Validar GOLDEN_SHA en DEV antes de promover
     # ==============================================================================
