@@ -15,6 +15,21 @@
 # - promote/golden-sha.sh
 # - promote/gitops-integration.sh
 
+# ==============================================================================
+# COMPAT: banner puede no estar cargado por el caller en algunos entornos.
+# - Si no existe, definimos un fallback simple para evitar "command not found".
+# ==============================================================================
+if ! declare -F banner >/dev/null 2>&1; then
+    banner() {
+        echo
+        echo "=================================================="
+        echo " $*"
+        echo "=================================================="
+        echo
+    }
+fi
+
+
 # [FIX] Solución de raíz: re-sincronizar submódulos para evitar estados dirty falsos
 resync_submodules_hard() {
   git submodule sync --recursive >/dev/null 2>&1 || true
