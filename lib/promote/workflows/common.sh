@@ -53,7 +53,14 @@ cleanup_bot_branches() {
     # 1. Estén totalmente fusionadas en HEAD (staging/dev)
     # 2. Coincidan con el patrón del bot
     local branches_to_clean
-    branches_to_clean=$(git branch -r --merged HEAD | grep 'origin/release-please--' | sed 's/origin\///' || true)
+    branches_to_clean="$(
+        git branch -r --merged HEAD \
+            | grep 'origin/release-please--' \
+            | sed 's|origin/||' \
+            | sed 's/^[[:space:]]*//' \
+            | sed '/^$/d' \
+            || true
+        )"
 
     if [[ -z "$branches_to_clean" ]]; then
         log_info "✨ No hay ramas de bot pendientes de limpieza."
@@ -67,6 +74,7 @@ cleanup_bot_branches() {
     # Modo automático (sin prompts): requerido para mantener el repo limpio al promover a staging
     if [[ "$mode" == "auto" ]]; then
         log_info "🧹 Limpieza automática activada (sin confirmación)."
+        local IFS=$'\n'
         for branch in $branches_to_clean; do
             log_info "🔥 Eliminando remote: $branch"
             git push origin --delete "$branch" || log_warn "No se pudo borrar $branch (tal vez ya no existe)."
@@ -76,6 +84,7 @@ cleanup_bot_branches() {
     fi
 
     if ask_yes_no "¿Eliminar estas ramas remotas para mantener la limpieza?"; then
+        local IFS=$'\n'
         for branch in $branches_to_clean; do
             log_info "🔥 Eliminando remote: $branch"
             git push origin --delete "$branch" || log_warn "No se pudo borrar $branch (tal vez ya no existe)."
