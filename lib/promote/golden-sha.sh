@@ -18,8 +18,22 @@
 # - DEVTOOLS_PR_MERGE_POLL_SECONDS=5       -> intervalo polling (segundos).
 
 resolve_golden_sha_file() {
-    # Preferimos dejar un rastro dentro de .devtools si existe como carpeta del repo,
-    # pero si estamos dentro del repo erd-devtools (REPO_ROOT==.devtools), usamos root.
+    # Guardar en el git dir para NO ensuciar el working tree (no afecta git status).
+    local root="${REPO_ROOT:-.}"
+    local git_dir
+    git_dir="$(git -C "$root" rev-parse --git-dir 2>/dev/null || echo "")"
+
+    if [[ -n "${git_dir:-}" ]]; then
+        # git_dir puede ser relativo (ej: ".git" o "modules/..."), lo normalizamos a path absoluto.
+        if [[ "$git_dir" != /* ]]; then
+            git_dir="${root}/${git_dir}"
+        fi
+        # Definimos la ruta dentro de .git (o git-dir correspondiente)
+        echo "${git_dir}/devtools/last_golden_sha"
+        return 0
+    fi
+
+    # Fallback final (solo si no podemos resolver git-dir, comportamiento antiguo)
     if [[ -d "${REPO_ROOT}/.devtools" ]]; then
         echo "${REPO_ROOT}/.devtools/.last_golden_sha"
         return 0
@@ -34,6 +48,9 @@ write_golden_sha() {
     f="$(resolve_golden_sha_file)"
 
     [[ -n "${sha:-}" ]] || return 1
+
+    # Asegura que existe el directorio destino (ej: .git/devtools)
+    mkdir -p "$(dirname "$f")" >/dev/null 2>&1 || true
 
     {
         echo "$sha"

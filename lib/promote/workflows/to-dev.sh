@@ -3,6 +3,7 @@
 #
 # Este módulo maneja la promoción a DEV:
 # - promote_to_dev: Crea/Mergea PRs, gestiona release-please y actualiza dev.
+# - (Opcional) Modo directo: Squash local + Push directo a dev (sin PR).
 #
 # Dependencias: utils.sh, git-ops.sh, checks.sh (cargadas por el orquestador)
 
@@ -15,6 +16,8 @@ __remote_head_sha() {
     git fetch "$remote" "$branch" >/dev/null 2>&1 || true
     git rev-parse "${remote}/${branch}" 2>/dev/null || true
 }
+
+__repo_name() { basename "${REPO_ROOT:-.}"; }
 
 __resolve_promote_script() {
     # 1) Si viene del bin principal, SCRIPT_DIR existe y es confiable
@@ -230,6 +233,12 @@ promote_dev_monitor() {
 promote_to_dev() {
     # [FIX] Resync de submódulos antes de cualquier validación (ensure_clean_git)
     resync_submodules_hard
+
+    # Modo DIRECTO (sin PR): squash local feature->dev + push directo + monitor bloqueante
+    if [[ "${DEVTOOLS_PROMOTE_DEV_DIRECT:-0}" == "1" ]]; then
+        promote_to_dev_direct
+        exit $?
+    fi
 
     local current_branch
     current_branch="$(git branch --show-current)"
