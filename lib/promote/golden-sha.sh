@@ -82,25 +82,26 @@ wait_for_pr_merge_and_get_sha() {
     local elapsed=0
 
     while true; do
-        # merged: true/false
-        local merged state
-        merged="$(gh pr view "$pr_number" --json merged --jq '.merged' 2>/dev/null || echo "false")"
-        state="$(gh pr view "$pr_number" --json state --jq '.state' 2>/dev/null || echo "")"
+        # Compat con versiones de gh: no todas exponen el campo "merged".
+        # Usamos mergedAt (null/vacío si no está mergeado).
+        local merged_at state
+        merged_at="$(GH_PAGER=cat gh pr view "$pr_number" --json mergedAt --jq '.mergedAt // ""' 2>/dev/null || echo "")"
+        state="$(GH_PAGER=cat gh pr view "$pr_number" --json state --jq '.state // ""' 2>/dev/null || echo "")"
 
-        if [[ "$merged" == "true" ]]; then
+        if [[ -n "${merged_at:-}" && "${merged_at:-null}" != "null" ]]; then
             local merge_sha
-            merge_sha="$(gh pr view "$pr_number" --json mergeCommit --jq '.mergeCommit.oid' 2>/dev/null || echo "")"
+            merge_sha="$(GH_PAGER=cat gh pr view "$pr_number" --json mergeCommit --jq '.mergeCommit.oid // ""' 2>/dev/null || echo "")"
             if [[ -n "${merge_sha:-}" && "${merge_sha:-null}" != "null" ]]; then
                 echo "$merge_sha"
                 return 0
             fi
-            # Si está merged pero no podemos leer mergeCommit, seguimos intentando un poco.
-        else
-            # Si el PR se cerró sin merge, abortamos.
-            if [[ "$state" == "CLOSED" ]]; then
-                log_error "El PR #$pr_number está CLOSED y no fue mergeado. Abortando."
-                return 1
-            fi
+            # Si está mergeado pero no podemos leer mergeCommit, seguimos intentando un poco.
+        fi
+
+        # Si el PR se cerró sin merge, abortamos.
+        if [[ "$state" == "CLOSED" ]]; then
+            log_error "El PR #$pr_number está CLOSED y no fue mergeado. Abortando."
+            return 1
         fi
 
         if (( elapsed >= timeout )); then

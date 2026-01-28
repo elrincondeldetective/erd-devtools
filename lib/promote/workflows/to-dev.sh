@@ -161,6 +161,15 @@ promote_dev_monitor() {
 
     # 2) Esperar merge real
     log_info "🔄 Esperando merge del PR #$feature_pr..."
+    # 0) Esperar aprobación humana antes de permitir merge
+    wait_for_pr_approval_or_die "$feature_pr" || return 1
+
+    # 1) Habilitar auto-merge SOLO cuando ya está aprobado
+    log_info "🤖 PR aprobado. Habilitando auto-merge (checks + merge)..."
+    GH_PAGER=cat gh pr merge "$feature_pr" --auto --squash --delete-branch
+
+    # 2) Esperar merge real
+    log_info "🔄 Esperando merge del PR #$feature_pr..."
     local merge_sha
     merge_sha="$(wait_for_pr_merge_and_get_sha "$feature_pr")"
     log_success "PR feature mergeado: ${merge_sha:0:7}"
@@ -179,7 +188,6 @@ promote_dev_monitor() {
         if [[ "${rp_pr:-}" =~ ^[0-9]+$ ]]; then
             post_rp=1
             log_info "🤖 Habilitando auto-merge para PR del bot (#$rp_pr)..."
-            # Importante: NO borramos la rama aquí; se limpia en promote staging.
             GH_PAGER=cat gh pr merge "$rp_pr" --auto --squash
 
             log_info "🔄 Esperando merge del PR del bot #$rp_pr..."
