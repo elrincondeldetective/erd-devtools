@@ -230,6 +230,66 @@ wait_for_workflow_success_on_ref_or_sha_or_die() {
     done
 }
 
+wait_for_pr_merge_commit_sha_or_die() {
+    # Args:
+    #   $1 = PR number
+    # Devuelve: mergeCommit SHA (oid) cuando el PR queda mergeado.
+    local pr_number="$1"
+    local timeout="${DEVTOOLS_PR_MERGE_TIMEOUT_SECONDS:-900}"
+    local interval="${DEVTOOLS_PR_MERGE_POLL_SECONDS:-5}"
+    local elapsed=0
+
+    if ! command -v gh >/dev/null 2>&1; then
+        log_error "No se encontró 'gh' para verificar PR #$pr_number."
+        return 1
+    fi
+
+    while true; do
+        local line=""
+
+        # Protege contra cuelgues de red/CLI: si existe `timeout`, lo usamos.
+        if command -v timeout >/dev/null 2>&1; then
+            line="$(
+                timeout 15s env GH_PAGER=cat gh pr view "$pr_number" \
+                --json merged,state,mergeCommit \
+                --jq '.merged|tostring + " " + .state + " " + (.mergeCommit.oid // "")' 2>/dev/null || true
+            )"
+        else
+            line="$(
+                GH_PAGER=cat gh pr view "$pr_number" \
+                --json merged,state,mergeCommit \
+                --jq '.merged|tostring + " " + .state + " " + (.mergeCommit.oid // "")' 2>/dev/null || true
+            )"
+        fi
+
+        if [[ -n "${line:-}" ]]; then
+            local merged state sha
+            merged="$(awk '{print $1}' <<<"$line")"
+            state="$(awk '{print $2}' <<<"$line")"
+            sha="$(awk '{print $3}' <<<"$line")"
+
+            if [[ "$merged" == "true" && -n "${sha:-}" && "${sha:-null}" != "null" ]]; then
+                echo "$sha"
+                return 0
+            fi
+
+            # Si el PR se cerró sin merge, abortamos.
+            if [[ "$state" == "CLOSED" && "$merged" != "true" ]]; then
+                log_error "El PR #$pr_number está CLOSED y no fue mergeado."
+                return 1
+            fi
+        fi
+
+        if (( elapsed >= timeout )); then
+            log_error "Timeout esperando a que el PR #$pr_number sea mergeado."
+            return 1
+        fi
+
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+}
+
 
 # ==============================================================================
 # 1. SMART SYNC (Con Auto-Absorción)
@@ -508,7 +568,7 @@ promote_to_dev() {
 
     echo "🔄 Esperando merge del PR #$pr_number..."
     local merge_sha
-    merge_sha="$(wait_for_pr_merge_and_get_sha "$pr_number")"
+    merge_sha="$(wait_for_pr_merge_commit_sha_or_die "$pr_number")"
 
     sync_branch_to_origin "dev" "origin"
 
@@ -527,7 +587,7 @@ promote_to_dev() {
 
             echo "🔄 Esperando merge del PR del bot #$rp_pr..."
             local rp_merge_sha
-            rp_merge_sha="$(wait_for_pr_merge_and_get_sha "$rp_pr")"
+            rp_merge_sha="$(wait_for_pr_merge_commit_sha_or_die "$rp_pr")"
 
             sync_branch_to_origin "dev" "origin"
         else
