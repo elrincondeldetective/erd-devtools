@@ -68,6 +68,215 @@ cleanup_bot_branches() {
 }
 
 # ==============================================================================
+# HELPERS: PRs del bot + espera de workflow build + espera de tags en SHA
+# ==============================================================================
+__read_repo_version() {
+    local vf
+    vf="$(resolve_repo_version_file)"
+    [[ -f "$vf" ]] || return 1
+    cat "$vf" | tr -d '[:space:]'
+}
+
+wait_for_release_please_pr_number_or_die() {
+    # Espera a que aparezca un PR head release-please--* hacia base dev
+    local timeout="${DEVTOOLS_RP_PR_WAIT_TIMEOUT_SECONDS:-900}"
+    local interval="${DEVTOOLS_RP_PR_WAIT_POLL_SECONDS:-5}"
+    local elapsed=0
+
+    while true; do
+        local pr_number
+        pr_number="$(
+          GH_PAGER=cat gh pr list --base dev --state open --json number,headRefName --jq \
+          '.[] | select(.headRefName | startswith("release-please--")) | .number' 2>/dev/null | head -n 1
+        )"
+
+        if [[ -n "${pr_number:-}" ]]; then
+            echo "$pr_number"
+            return 0
+        fi
+
+        if (( elapsed >= timeout )); then
+            log_error "Timeout esperando PR release-please--* hacia dev."
+            return 1
+        fi
+
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+}
+
+wait_for_tag_on_sha_or_die() {
+    # Args: sha_full, pattern_regex, label
+    local sha_full="$1"
+    local pattern="$2"
+    local label="${3:-tag}"
+    local timeout="${DEVTOOLS_TAG_WAIT_TIMEOUT_SECONDS:-900}"
+    local interval="${DEVTOOLS_TAG_WAIT_POLL_SECONDS:-5}"
+    local elapsed=0
+
+    log_info "🏷️  Esperando ${label} en SHA ${sha_full:0:7} (pattern: ${pattern})..."
+
+    while true; do
+        git fetch origin --tags --force >/dev/null 2>&1 || true
+        local found
+        found="$(git tag --points-at "$sha_full" 2>/dev/null | grep -E "$pattern" | head -n 1 || true)"
+        if [[ -n "${found:-}" ]]; then
+            log_success "🏷️  Tag detectado: $found"
+            echo "$found"
+            return 0
+        fi
+
+        if (( elapsed >= timeout )); then
+            log_error "Timeout esperando ${label} en SHA ${sha_full:0:7}"
+            return 1
+        fi
+
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+}
+
+wait_for_workflow_success_on_ref_or_sha_or_die() {
+    # Args: workflow_file, sha_full, optional ref (branch/tag)
+    local wf_file="$1"
+    local sha_full="$2"
+    local ref="${3:-}"
+    local label="${4:-workflow}"
+    local timeout="${DEVTOOLS_BUILD_WAIT_TIMEOUT_SECONDS:-1800}"
+    local interval="${DEVTOOLS_BUILD_WAIT_POLL_SECONDS:-10}"
+    local elapsed=0
+
+    if [[ "${DEVTOOLS_SKIP_WAIT_BUILD:-0}" == "1" ]]; then
+        log_warn "DEVTOOLS_SKIP_WAIT_BUILD=1 -> Omitiendo espera de ${label}."
+        return 0
+    fi
+
+    if ! command -v gh >/dev/null 2>&1; then
+        log_error "No se encontró 'gh'. No puedo verificar ${label} en GitHub Actions."
+        return 1
+    fi
+
+    log_info "🏗️  Esperando ${label} (${wf_file}) en SHA ${sha_full:0:7}..."
+
+    local run_id=""
+
+    while true; do
+        if [[ -n "${ref:-}" ]]; then
+            run_id="$(
+              GH_PAGER=cat gh run list --workflow "$wf_file" --branch "$ref" -L 30 \
+                --json databaseId,headSha,status,conclusion \
+                --jq ".[] | select(.headSha==\"$sha_full\") | .databaseId" 2>/dev/null | head -n 1
+            )"
+        fi
+
+        if [[ -z "${run_id:-}" ]]; then
+            run_id="$(
+              GH_PAGER=cat gh run list --workflow "$wf_file" -L 30 \
+                --json databaseId,headSha,status,conclusion \
+                --jq ".[] | select(.headSha==\"$sha_full\") | .databaseId" 2>/dev/null | head -n 1
+            )"
+        fi
+
+        if [[ -n "${run_id:-}" ]]; then
+            break
+        fi
+
+        if (( elapsed >= timeout )); then
+            log_error "Timeout esperando que aparezca un run de ${wf_file} para SHA ${sha_full:0:7}"
+            return 1
+        fi
+
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+
+    elapsed=0
+    while true; do
+        local status conclusion
+        status="$(GH_PAGER=cat gh run view "$run_id" --json status --jq '.status' 2>/dev/null || echo "")"
+        conclusion="$(GH_PAGER=cat gh run view "$run_id" --json conclusion --jq '.conclusion' 2>/dev/null || echo "")"
+
+        if [[ "$status" == "completed" ]]; then
+            if [[ "$conclusion" == "success" ]]; then
+                log_success "🏗️  ${label} OK (run_id=$run_id)"
+                return 0
+            fi
+            log_error "${label} falló (run_id=$run_id, conclusion=$conclusion)"
+            return 1
+        fi
+
+        if (( elapsed >= timeout )); then
+            log_error "Timeout esperando a que termine ${label} (run_id=$run_id)"
+            return 1
+        fi
+
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+}
+
+wait_for_pr_merge_commit_sha_or_die() {
+    # Args:
+    #   $1 = PR number
+    # Devuelve: mergeCommit SHA (oid) cuando el PR queda mergeado.
+    local pr_number="$1"
+    local timeout="${DEVTOOLS_PR_MERGE_TIMEOUT_SECONDS:-900}"
+    local interval="${DEVTOOLS_PR_MERGE_POLL_SECONDS:-5}"
+    local elapsed=0
+
+    if ! command -v gh >/dev/null 2>&1; then
+        log_error "No se encontró 'gh' para verificar PR #$pr_number."
+        return 1
+    fi
+
+    while true; do
+        local line=""
+
+        # Protege contra cuelgues de red/CLI: si existe `timeout`, lo usamos.
+        if command -v timeout >/dev/null 2>&1; then
+            line="$(
+                timeout 15s env GH_PAGER=cat gh pr view "$pr_number" \
+                --json merged,state,mergeCommit \
+                --jq '.merged|tostring + " " + .state + " " + (.mergeCommit.oid // "")' 2>/dev/null || true
+            )"
+        else
+            line="$(
+                GH_PAGER=cat gh pr view "$pr_number" \
+                --json merged,state,mergeCommit \
+                --jq '.merged|tostring + " " + .state + " " + (.mergeCommit.oid // "")' 2>/dev/null || true
+            )"
+        fi
+
+        if [[ -n "${line:-}" ]]; then
+            local merged state sha
+            merged="$(awk '{print $1}' <<<"$line")"
+            state="$(awk '{print $2}' <<<"$line")"
+            sha="$(awk '{print $3}' <<<"$line")"
+
+            if [[ "$merged" == "true" && -n "${sha:-}" && "${sha:-null}" != "null" ]]; then
+                echo "$sha"
+                return 0
+            fi
+
+            # Si el PR se cerró sin merge, abortamos.
+            if [[ "$state" == "CLOSED" && "$merged" != "true" ]]; then
+                log_error "El PR #$pr_number está CLOSED y no fue mergeado."
+                return 1
+            fi
+        fi
+
+        if (( elapsed >= timeout )); then
+            log_error "Timeout esperando a que el PR #$pr_number sea mergeado."
+            return 1
+        fi
+
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+}
+
+
+# ==============================================================================
 # 1. SMART SYNC (Con Auto-Absorción)
 # ==============================================================================
 promote_sync_all() {
@@ -413,11 +622,32 @@ promote_to_dev() {
     if ! ask_yes_no "¿Aplastar 'dev' con '$current_branch'?"; then exit 0; fi
     ensure_clean_git
 
-    # ==============================================================================
-    # FASE 4: Capturar paths cambiados ANTES del reset destructivo
-    # ==============================================================================
-    local __gitops_changed_paths
-    __gitops_changed_paths="$(git diff --name-only "origin/dev..${current_branch}" 2>/dev/null || true)"
+    banner "🤖 PR LISTO (#$pr_number) -> dev"
+    echo "⏳ Habilitando auto-merge (espera aprobación + checks)..."
+    GH_PAGER=cat gh pr merge "$pr_number" --auto --squash --delete-branch
+
+    echo "🔄 Esperando merge del PR #$pr_number..."
+    local merge_sha
+    merge_sha="$(wait_for_pr_merge_commit_sha_or_die "$pr_number")"
+
+    sync_branch_to_origin "dev" "origin"
+
+    # Esperar PR del bot (release-please) si existe el workflow.
+    # Importante: release-please puede decidir NO abrir PR si no hay bump; en ese caso seguimos.
+    if repo_has_workflow_file "release-please"; then
+        echo
+        log_info "🤖 Esperando PR del bot release-please hacia dev..."
+        local rp_pr
+        rp_pr="$(wait_for_release_please_pr_number_or_die 2>/dev/null || true)"
+
+        if [[ -n "${rp_pr:-}" ]]; then
+            log_info "🤖 Habilitando auto-merge para PR del bot (#$rp_pr)..."
+            # Importante: NO borramos la rama aquí; se limpia en promote staging.
+            GH_PAGER=cat gh pr merge "$rp_pr" --auto --squash
+
+            echo "🔄 Esperando merge del PR del bot #$rp_pr..."
+            local rp_merge_sha
+            rp_merge_sha="$(wait_for_pr_merge_commit_sha_or_die "$rp_pr")"
 
     update_branch_from_remote "dev" "origin" "true"
     git reset --hard "$current_branch"
