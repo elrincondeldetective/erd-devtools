@@ -40,6 +40,58 @@ __resolve_promote_script() {
 }
 
 # ------------------------------------------------------------------------------
+# Espera aprobación del PR (control humano)
+# - Requiere al menos 1 review "APPROVED" (reviewDecision=APPROVED).
+#
+# Overrides:
+# - DEVTOOLS_PR_APPROVAL_TIMEOUT_SECONDS=0  -> 0 = sin timeout (default).
+# - DEVTOOLS_PR_APPROVAL_POLL_SECONDS=10    -> intervalo polling.
+# - DEVTOOLS_SKIP_PR_APPROVAL_WAIT=1        -> bypass (no recomendado).
+# ------------------------------------------------------------------------------
+wait_for_pr_approval_or_die() {
+    local pr_number="$1"
+    local timeout="${DEVTOOLS_PR_APPROVAL_TIMEOUT_SECONDS:-0}"
+    local interval="${DEVTOOLS_PR_APPROVAL_POLL_SECONDS:-10}"
+    local elapsed=0
+
+    if [[ "${DEVTOOLS_SKIP_PR_APPROVAL_WAIT:-0}" == "1" ]]; then
+        log_warn "DEVTOOLS_SKIP_PR_APPROVAL_WAIT=1 -> Omitiendo espera de aprobación del PR."
+        return 0
+    fi
+
+    if ! command -v gh >/dev/null 2>&1; then
+        log_error "Se requiere 'gh' para verificar aprobación del PR."
+        return 1
+    fi
+
+    log_info "⏳ Esperando aprobación del PR #$pr_number (reviewDecision=APPROVED)..."
+
+    while true; do
+        local state decision
+        state="$(GH_PAGER=cat gh pr view "$pr_number" --json state --jq '.state // ""' 2>/dev/null || echo "")"
+        decision="$(GH_PAGER=cat gh pr view "$pr_number" --json reviewDecision --jq '.reviewDecision // ""' 2>/dev/null || echo "")"
+
+        if [[ "$decision" == "APPROVED" ]]; then
+            log_success "✅ PR #$pr_number aprobado."
+            return 0
+        fi
+
+        if [[ "$state" == "CLOSED" ]]; then
+            log_error "El PR #$pr_number está CLOSED y no fue aprobado/mergeado. Abortando."
+            return 1
+        fi
+
+        if (( timeout > 0 && elapsed >= timeout )); then
+            log_error "Timeout esperando aprobación del PR #$pr_number."
+            return 1
+        fi
+
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+}
+
+# ------------------------------------------------------------------------------
 # Monitor: espera merges/builds y captura GOLDEN_SHA sin tocar tu worktree
 # Uso interno: git promote _dev-monitor <feature_pr_number> [feature_branch]
 # ------------------------------------------------------------------------------
@@ -51,6 +103,15 @@ promote_dev_monitor() {
 
     log_info "🧠 DEV monitor iniciado (PR #${feature_pr}${feature_branch:+, branch=$feature_branch})"
 
+    log_info "🔄 Esperando merge del PR #$feature_pr..."
+    # 0) Esperar aprobación humana antes de permitir merge
+    wait_for_pr_approval_or_die "$feature_pr" || return 1
+
+    # 1) Habilitar auto-merge SOLO cuando ya está aprobado
+    log_info "🤖 PR aprobado. Habilitando auto-merge (checks + merge)..."
+    GH_PAGER=cat gh pr merge "$feature_pr" --auto --squash --delete-branch
+
+    # 2) Esperar merge real
     log_info "🔄 Esperando merge del PR #$feature_pr..."
     local merge_sha
     merge_sha="$(wait_for_pr_merge_and_get_sha "$feature_pr")"
