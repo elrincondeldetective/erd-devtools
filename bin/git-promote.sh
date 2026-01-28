@@ -73,6 +73,12 @@ case "$TARGET_ENV" in
         # Permite pasar una rama opcional como segundo argumento
         promote_dev_update_squash "${2:-}"
         ;;
+    feature/*)
+        # UX: permitir "git promote feature/mi-rama" para aplastar esa rama
+        # dentro de feature/dev-update (y pushear el resultado al remoto).
+        # No interfiere con git promote dev/staging/prod.
+        promote_dev_update_squash "$TARGET_ENV"
+        ;;
     hotfix)
         create_hotfix
         ;;
@@ -88,6 +94,7 @@ case "$TARGET_ENV" in
         echo "  prod                : Promueve staging -> main (gestiona Release Tags)"
         echo "  sync                : Sincronización inteligente (Smart Sync)"
         echo "  feature/dev-update  : Aplasta (squash) una rama dentro de feature/dev-update"
+        echo "  feature/<rama>      : Alias de lo anterior (squash + push a feature/dev-update)"
         echo "  hotfix              : Crea una rama de hotfix desde main"
         echo "  hotfix-finish       : Finaliza e integra el hotfix"
         exit 1

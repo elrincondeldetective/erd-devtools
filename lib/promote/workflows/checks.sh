@@ -6,7 +6,7 @@
 # - wait_for_tag_on_sha_or_die
 # - wait_for_workflow_success_on_ref_or_sha_or_die
 #
-# Dependencias: Se asume que utils.sh (logging) está cargado por el orquestador.
+# Dependencias: Se asume que utils.sh (logging, is_tty) está cargado por el orquestador.
 
 # ==============================================================================
 # HELPERS: Checks y Esperas (Polling)
@@ -131,6 +131,24 @@ wait_for_workflow_success_on_ref_or_sha_or_die() {
         elapsed=$((elapsed + interval))
     done
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # MODO “PROGRESO REAL” EN VIVO (TTY): gh run watch
+    # ──────────────────────────────────────────────────────────────────────────
+    if is_tty; then
+        log_info "📺 Mostrando progreso en vivo del run_id=$run_id (GitHub Actions)..."
+        # gh run watch termina con exit code != 0 si falla, y eso lo tratamos como fallo del workflow.
+        if GH_PAGER=cat gh run watch "$run_id" --exit-status; then
+            log_success "🏗️  ${label} OK (run_id=$run_id)"
+            return 0
+        else
+            log_error "${label} falló (run_id=$run_id)"
+            return 1
+        fi
+    fi
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # FALLBACK NO-TTY: polling (comportamiento actual)
+    # ──────────────────────────────────────────────────────────────────────────
     elapsed=0
     while true; do
         local status conclusion
