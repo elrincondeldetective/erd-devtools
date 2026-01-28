@@ -146,6 +146,10 @@ promote_sync_all() {
     # Cascada (APLASTANTE)
     for target in dev staging main; do
         log_info "🚀 Sincronizando ${target^^} (APLASTANTE)..."
+        ensure_local_tracking_branch "$target" "origin" || {
+            log_error "No pude preparar la rama '$target' desde 'origin/$target'."
+            exit 1
+        }
         update_branch_from_remote "$target"
 
         log_warn "🧨 MODO APLASTANTE: sobrescribiendo '$target' con '$source_branch'..."
@@ -693,13 +697,18 @@ promote_to_prod() {
     generate_ai_prompt "staging" "origin/main"
 
     # ==============================================================================
-    # FASE 2: SI GITHUB TAGGEA EN MAIN, NO TAGGEAR LOCALMENTE
+    # FASE 2 (CORREGIDA): Tags por defecto SOLO por GitHub Actions (si existe tagger).
+    # - Si NO hay tagger en el repo actual, por defecto NO se crea tag final (consumer mode).
+    # - Para permitir tag local manual (legacy): DEVTOOLS_ALLOW_LOCAL_TAGS=1 y DEVTOOLS_ENFORCE_GH_TAGS=0
     # ==============================================================================
+    local allow_local_tags="${DEVTOOLS_ALLOW_LOCAL_TAGS:-0}"
+    local enforce_gh_tags="${DEVTOOLS_ENFORCE_GH_TAGS:-1}"
+
+    # Si hay tagger en GitHub (tag-final-on-main), no taggeamos localmente
     if ! should_tag_locally_for_prod; then
         echo
         log_info "🏷️  Tagger detectado en GitHub (tag-final-on-main)."
         log_info "   Este repo delega la creación del tag final a GitHub Actions."
-        log_info "   (Override: DEVTOOLS_FORCE_LOCAL_TAGS=1 para forzar tag local)"
         echo
 
         if ! ask_yes_no "¿Promover a PRODUCCIÓN (sin crear tag local)?"; then exit 0; fi
@@ -733,7 +742,37 @@ promote_to_prod() {
 
         return 0
     fi
+
+    # Si NO hay tagger, por defecto NO tageamos (consumer mode), salvo legacy override
+    if [[ "$allow_local_tags" != "1" || "$enforce_gh_tags" == "1" ]]; then
+        log_warn "🏷️  No se detectó tagger (tag-final-on-main). Continuando SIN tag final (consumer mode)."
+        log_warn "     (Override legacy: DEVTOOLS_ALLOW_LOCAL_TAGS=1 y DEVTOOLS_ENFORCE_GH_TAGS=0)"
+        ensure_clean_git
+        ensure_local_tracking_branch "main" "origin" || { log_error "No pude preparar la rama 'main' desde 'origin/main'."; exit 1; }
+        update_branch_from_remote "main"
+        git merge --ff-only staging
+
+        local main_sha staging_sha
+        main_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+        staging_sha="$(git rev-parse staging 2>/dev/null || true)"
+        if [[ -n "${staging_sha:-}" && -n "${main_sha:-}" && "$main_sha" != "$staging_sha" ]]; then
+            log_error "FF-only merge no resultó en el mismo SHA (main != staging). Abortando."
+            echo "   staging: $staging_sha"
+            echo "   main   : $main_sha"
+            exit 1
+        fi
+
+        git push origin main
+        log_success "✅ Producción actualizada (sin tag final)."
+
+        local changed_paths
+        changed_paths="${__gitops_changed_paths:-$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)}"
+        maybe_trigger_gitops_update "main" "$main_sha" "$changed_paths"
+
+        return 0
+    fi
     
+    # --- CAMINO LEGACY: TAG LOCAL MANUAL (solo si está permitido) ---
     # [FIX] Inicializar variable para evitar error 'unbound variable' en strict mode
     local tmp_notes
     tmp_notes="$(mktemp -t release-notes.XXXXXX.md)"
