@@ -15,14 +15,20 @@
 # - promote/golden-sha.sh
 # - promote/gitops-integration.sh
 
-# [FIX] Helper visual para evitar error "orden no encontrada"
-banner() {
-    echo ""
-    echo "=============================================================================="
-    echo "   $1"
-    echo "=============================================================================="
-    echo ""
-}
+# ==============================================================================
+# COMPAT: banner puede no estar cargado por el caller en algunos entornos.
+# - Si no existe, definimos un fallback simple para evitar "command not found".
+# ==============================================================================
+if ! declare -F banner >/dev/null 2>&1; then
+    banner() {
+        echo
+        echo "=================================================="
+        echo " $*"
+        echo "=================================================="
+        echo
+    }
+fi
+
 
 # [FIX] Solución de raíz: re-sincronizar submódulos para evitar estados dirty falsos
 resync_submodules_hard() {
@@ -224,6 +230,7 @@ wait_for_workflow_success_on_ref_or_sha_or_die() {
     done
 }
 
+
 # ==============================================================================
 # 1. SMART SYNC (Con Auto-Absorción)
 # ==============================================================================
@@ -303,6 +310,10 @@ promote_sync_all() {
     # Cascada (APLASTANTE)
     for target in dev staging main; do
         log_info "🚀 Sincronizando ${target^^} (APLASTANTE)..."
+        ensure_local_tracking_branch "$target" "origin" || {
+            log_error "No pude preparar la rama '$target' desde 'origin/$target'."
+            exit 1
+        }
         update_branch_from_remote "$target"
 
         log_warn "🧨 MODO APLASTANTE: sobrescribiendo '$target' con '$source_branch'..."
@@ -501,25 +512,30 @@ promote_to_dev() {
 
     sync_branch_to_origin "dev" "origin"
 
-    # Esperar PR del bot (release-please) si existe el workflow
+    # Esperar PR del bot (release-please) si existe el workflow.
+    # Importante: release-please puede decidir NO abrir PR si no hay bump; en ese caso seguimos.
     if repo_has_workflow_file "release-please"; then
         echo
         log_info "🤖 Esperando PR del bot release-please hacia dev..."
         local rp_pr
-        rp_pr="$(wait_for_release_please_pr_number_or_die)"
+        rp_pr="$(wait_for_release_please_pr_number_or_die 2>/dev/null || true)"
 
-        log_info "🤖 Habilitando auto-merge para PR del bot (#$rp_pr)..."
-        # Importante: NO borramos la rama aquí; se limpia en promote staging.
-        GH_PAGER=cat gh pr merge "$rp_pr" --auto --squash
+        if [[ -n "${rp_pr:-}" ]]; then
+            log_info "🤖 Habilitando auto-merge para PR del bot (#$rp_pr)..."
+            # Importante: NO borramos la rama aquí; se limpia en promote staging.
+            GH_PAGER=cat gh pr merge "$rp_pr" --auto --squash
 
-        echo "🔄 Esperando merge del PR del bot #$rp_pr..."
-        local rp_merge_sha
-        rp_merge_sha="$(wait_for_pr_merge_and_get_sha "$rp_pr")"
+            echo "🔄 Esperando merge del PR del bot #$rp_pr..."
+            local rp_merge_sha
+            rp_merge_sha="$(wait_for_pr_merge_and_get_sha "$rp_pr")"
 
-        sync_branch_to_origin "dev" "origin"
+            sync_branch_to_origin "dev" "origin"
+        else
+            log_warn "🤷 No se detectó PR release-please--* en la ventana de espera. Continuando."
+        fi
     fi
 
-    # En este punto, el SHA “válido” es el HEAD de dev (post-bot)
+    # En este punto, el SHA “válido” es el HEAD de dev (post-bot si existió)
     local dev_sha
     dev_sha="$(git rev-parse HEAD 2>/dev/null || true)"
 
@@ -585,8 +601,148 @@ promote_to_staging() {
     __gitops_changed_paths="$(git diff --name-only "origin/staging..dev" 2>/dev/null || true)"
 
     # ==============================================================================
-    # FASE 2 (CORREGIDA): el bot crea RC tag si existe workflow tag-rc-on-staging
+    # FASE 2 (CORREGIDA): Tags por defecto SOLO por GitHub Actions (si existe tagger).
+    # - Si NO hay tagger en el repo actual, por defecto NO se crean tags (consumer mode).
+    # - Para permitir tags locales manuales (legacy): DEVTOOLS_ALLOW_LOCAL_TAGS=1
     # ==============================================================================
+    local allow_local_tags="${DEVTOOLS_ALLOW_LOCAL_TAGS:-0}"
+    local enforce_gh_tags="${DEVTOOLS_ENFORCE_GH_TAGS:-1}"
+    local use_remote_tagger=0
+    
+    if ! should_tag_locally_for_staging; then
+        # Tagger detectado en GitHub
+        echo
+        log_info "🤖 Se detectó automatización en GitHub (tag-rc-on-staging)."
+        if [[ "$enforce_gh_tags" == "1" ]]; then
+            log_info "🔒 Modo estricto: SOLO GitHub creará el tag RC (sin tagging local)."
+            use_remote_tagger=1
+        else
+            echo "   Opciones:"
+            echo "     [Y] Sí (Auto):    Solo empujar cambios. GitHub crea el tag (vX.Y.Z-rcN)."
+            echo "     [N] No (Manual): Quiero definir el tag yo mismo ahora."
+            echo
+            if ask_yes_no "¿Delegar el tagging a GitHub?"; then
+                use_remote_tagger=1
+            else
+                log_warn "🖐️  Modo Manual activado: Tú tienes el control."
+                use_remote_tagger=0
+            fi
+        fi
+    else
+        # No hay tagger: por defecto NO tageamos (consumer mode)
+        if [[ "$allow_local_tags" == "1" && "$enforce_gh_tags" != "1" ]]; then
+            log_warn "🖐️  No hay tagger en GitHub. DEVTOOLS_ALLOW_LOCAL_TAGS=1 -> habilitando tagging manual local."
+            use_remote_tagger=0
+        else
+            log_warn "🏷️  No se detectó tagger (tag-rc-on-staging). Continuando SIN tags (consumer mode)."
+            log_warn "     (Override legacy: DEVTOOLS_ALLOW_LOCAL_TAGS=1 y DEVTOOLS_ENFORCE_GH_TAGS=0)"
+            use_remote_tagger=1
+        fi
+    fi
+
+    # --- CAMINO A: AUTOMÁTICO (Solo Push, tags por bot si existen) / O SIN TAGS (consumer mode) ---
+    if [[ "$use_remote_tagger" == "1" ]]; then
+        ensure_clean_git
+        ensure_local_tracking_branch "staging" "origin" || { log_error "No pude preparar la rama 'staging' desde 'origin/staging'."; exit 1; }
+        update_branch_from_remote "staging"
+        git merge --ff-only dev
+
+        # Validar SHA
+        local staging_sha dev_sha
+        staging_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+        dev_sha="$(git rev-parse dev 2>/dev/null || true)"
+        if [[ -n "${dev_sha:-}" && -n "${staging_sha:-}" && "$staging_sha" != "$dev_sha" ]]; then
+            log_error "FF-only merge no resultó en el mismo SHA (staging != dev). Abortando."
+            exit 1
+        fi
+
+        git push origin staging
+        log_success "✅ Staging actualizado."
+
+        # Esperar RC tag + build del tag (solo si este repo tiene el tagger)
+        if repo_has_workflow_file "tag-rc-on-staging"; then
+            local ver
+            ver="$(__read_repo_version 2>/dev/null || true)"
+            if [[ -n "${ver:-}" ]]; then
+                local rc_pattern="^v${ver}-rc[0-9]+$"
+                local rc_tag
+                rc_tag="$(wait_for_tag_on_sha_or_die "$staging_sha" "$rc_pattern" "RC tag")"
+                if repo_has_workflow_file "build-push"; then
+                    wait_for_workflow_success_on_ref_or_sha_or_die "build-push.yaml" "$staging_sha" "$rc_tag" "Build and Push (tag RC)"
+                fi
+            fi
+        fi
+
+        # ==============================================================================
+        # FASE 5: LIMPIEZA DE RAMAS DEL BOT (Auto)
+        # ==============================================================================
+        cleanup_bot_branches auto
+
+        # Disparar GitOps
+        local changed_paths
+        changed_paths="${__gitops_changed_paths:-$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)}"
+        maybe_trigger_gitops_update "staging" "$staging_sha" "$changed_paths"
+
+        return 0
+    fi
+    
+    # --- CAMINO B: MANUAL (Legacy / solo si está permitido) ---
+    
+    local tmp_notes
+    tmp_notes="$(mktemp -t release-notes.XXXXXX.md)"
+    trap 'rm -f "$tmp_notes"' EXIT
+    
+    capture_release_notes "$tmp_notes"
+    [[ ! -s "$tmp_notes" ]] && { log_error "Notas vacías."; exit 1; }
+    
+    # 1. Obtener versión base desde archivo VERSION (fuente de verdad)
+    local version_file
+    version_file="$(resolve_repo_version_file)"
+
+    local base_ver
+    if [[ -f "$version_file" ]]; then
+        base_ver=$(cat "$version_file" | tr -d '[:space:]')
+        log_info "📄 Versión actual en archivo: $base_ver"
+    else
+        base_ver=$(get_current_version) # Fallback
+    fi
+
+    # 2. Calcular SIGUIENTE versión basada en commits
+    local next_ver="$base_ver"
+    if [[ "${DEVTOOLS_SUGGEST_VERSION_FROM_COMMITS:-0}" == "1" ]]; then
+        if command -v calculate_next_version >/dev/null; then
+            next_ver=$(calculate_next_version "$base_ver")
+            if [[ "$next_ver" != "$base_ver" ]]; then
+                log_info "🧠 Cálculo automático: $base_ver -> $next_ver (según commits)"
+            else
+                log_info "🧠 Cálculo automático: Sin cambios mayores detectados."
+            fi
+        fi
+    else
+        log_info "🤖 Versionado gestionado por GitHub: usando $base_ver desde VERSION (sin recalcular)."
+    fi
+
+    # 3. Calcular RC sobre la versión objetivo
+    local rc_num
+    rc_num="$(next_rc_number "$next_ver")"
+    local suggested_tag="v${next_ver}-rc${rc_num}"
+    
+    # 4. Opción de Override Manual
+    echo
+    log_info "🔖 Tag sugerido: $suggested_tag"
+    local rc_tag=""
+    read -r -p "Presiona ENTER para usar '$suggested_tag' o escribe tu versión manual: " rc_tag
+    rc_tag="${rc_tag:-$suggested_tag}"
+
+    prepend_release_notes_header "$tmp_notes" "Release Notes - ${rc_tag} (Staging)"
+    
+    if ! ask_yes_no "¿Desplegar a STAGING con tag $rc_tag?"; then 
+        # Si el usuario cancela, limpiamos el trap para no borrar archivos random
+        rm -f "$tmp_notes"
+        trap - EXIT
+        exit 0
+    fi
+
     ensure_clean_git
     ensure_local_tracking_branch "staging" "origin" || { log_error "No pude preparar la rama 'staging' desde 'origin/staging'."; exit 1; }
     update_branch_from_remote "staging"
@@ -661,13 +817,18 @@ promote_to_prod() {
     generate_ai_prompt "staging" "origin/main"
 
     # ==============================================================================
-    # FASE 2: SI GITHUB TAGGEA EN MAIN, NO TAGGEAR LOCALMENTE
+    # FASE 2 (CORREGIDA): Tags por defecto SOLO por GitHub Actions (si existe tagger).
+    # - Si NO hay tagger en el repo actual, por defecto NO se crea tag final (consumer mode).
+    # - Para permitir tag local manual (legacy): DEVTOOLS_ALLOW_LOCAL_TAGS=1 y DEVTOOLS_ENFORCE_GH_TAGS=0
     # ==============================================================================
+    local allow_local_tags="${DEVTOOLS_ALLOW_LOCAL_TAGS:-0}"
+    local enforce_gh_tags="${DEVTOOLS_ENFORCE_GH_TAGS:-1}"
+
+    # Si hay tagger en GitHub (tag-final-on-main), no taggeamos localmente
     if ! should_tag_locally_for_prod; then
         echo
         log_info "🏷️  Tagger detectado en GitHub (tag-final-on-main)."
         log_info "   Este repo delega la creación del tag final a GitHub Actions."
-        log_info "   (Override: DEVTOOLS_FORCE_LOCAL_TAGS=1 para forzar tag local)"
         echo
 
         if ! ask_yes_no "¿Promover a PRODUCCIÓN (sin crear tag local)?"; then exit 0; fi
@@ -715,7 +876,37 @@ promote_to_prod() {
 
         return 0
     fi
+
+    # Si NO hay tagger, por defecto NO tageamos (consumer mode), salvo legacy override
+    if [[ "$allow_local_tags" != "1" || "$enforce_gh_tags" == "1" ]]; then
+        log_warn "🏷️  No se detectó tagger (tag-final-on-main). Continuando SIN tag final (consumer mode)."
+        log_warn "     (Override legacy: DEVTOOLS_ALLOW_LOCAL_TAGS=1 y DEVTOOLS_ENFORCE_GH_TAGS=0)"
+        ensure_clean_git
+        ensure_local_tracking_branch "main" "origin" || { log_error "No pude preparar la rama 'main' desde 'origin/main'."; exit 1; }
+        update_branch_from_remote "main"
+        git merge --ff-only staging
+
+        local main_sha staging_sha
+        main_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+        staging_sha="$(git rev-parse staging 2>/dev/null || true)"
+        if [[ -n "${staging_sha:-}" && -n "${main_sha:-}" && "$main_sha" != "$staging_sha" ]]; then
+            log_error "FF-only merge no resultó en el mismo SHA (main != staging). Abortando."
+            echo "   staging: $staging_sha"
+            echo "   main   : $main_sha"
+            exit 1
+        fi
+
+        git push origin main
+        log_success "✅ Producción actualizada (sin tag final)."
+
+        local changed_paths
+        changed_paths="${__gitops_changed_paths:-$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)}"
+        maybe_trigger_gitops_update "main" "$main_sha" "$changed_paths"
+
+        return 0
+    fi
     
+    # --- CAMINO LEGACY: TAG LOCAL MANUAL (solo si está permitido) ---
     # [FIX] Inicializar variable para evitar error 'unbound variable' en strict mode
     local tmp_notes
     tmp_notes="$(mktemp -t release-notes.XXXXXX.md)"
