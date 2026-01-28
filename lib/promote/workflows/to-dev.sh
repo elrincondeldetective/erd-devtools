@@ -67,9 +67,16 @@ wait_for_pr_approval_or_die() {
     log_info "⏳ Esperando aprobación del PR #$pr_number (reviewDecision=APPROVED)..."
 
     while true; do
-        local state decision
+        local state decision merged_at
         state="$(GH_PAGER=cat gh pr view "$pr_number" --json state --jq '.state // ""' 2>/dev/null || echo "")"
         decision="$(GH_PAGER=cat gh pr view "$pr_number" --json reviewDecision --jq '.reviewDecision // ""' 2>/dev/null || echo "")"
+        merged_at="$(GH_PAGER=cat gh pr view "$pr_number" --json mergedAt --jq '.mergedAt // ""' 2>/dev/null || echo "")"
+
+        # ✅ Si ya está mergeado, no tiene sentido esperar aprobación.
+        if [[ -n "${merged_at:-}" && "${merged_at:-null}" != "null" ]]; then
+            log_success "✅ PR #$pr_number ya está MERGED (mergedAt=$merged_at)."
+            return 0
+        fi
 
         if [[ "$decision" == "APPROVED" ]]; then
             log_success "✅ PR #$pr_number aprobado."
