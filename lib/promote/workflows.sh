@@ -748,42 +748,43 @@ promote_to_staging() {
     update_branch_from_remote "staging"
     git merge --ff-only dev
 
-    # ==============================================================================
-    # FASE 3: Asegurar mismo SHA (staging == dev == golden)
-    # ==============================================================================
+    # Validar SHA
     local staging_sha dev_sha
     staging_sha="$(git rev-parse HEAD 2>/dev/null || true)"
     dev_sha="$(git rev-parse dev 2>/dev/null || true)"
     if [[ -n "${dev_sha:-}" && -n "${staging_sha:-}" && "$staging_sha" != "$dev_sha" ]]; then
-        # Limpieza antes de salir por error
-        rm -f "$tmp_notes"
-        trap - EXIT
         log_error "FF-only merge no resultó en el mismo SHA (staging != dev). Abortando."
-        echo "   dev    : $dev_sha"
-        echo "   staging: $staging_sha"
         exit 1
     fi
 
-    git tag -a "$rc_tag" -F "$tmp_notes"
     git push origin staging
-    git push origin "$rc_tag"
-    log_success "✅ Staging actualizado ($rc_tag)."
+    log_success "✅ Staging actualizado."
 
-    # [FIX] CRASH FIX: Limpiamos archivo y quitamos trap ANTES de que la variable local muera
-    rm -f "$tmp_notes"
-    trap - EXIT
+    # Esperar RC tag + build del tag (solo si este repo tiene el tagger)
+    if repo_has_workflow_file "tag-rc-on-staging"; then
+        local ver
+        ver="$(__read_repo_version 2>/dev/null || true)"
+        if [[ -n "${ver:-}" ]]; then
+            local rc_pattern="^v${ver}-rc[0-9]+$"
+            local rc_tag
+            rc_tag="$(wait_for_tag_on_sha_or_die "$staging_sha" "$rc_pattern" "RC tag")"
+            if repo_has_workflow_file "build-push"; then
+                wait_for_workflow_success_on_ref_or_sha_or_die "build-push.yaml" "$staging_sha" "$rc_tag" "Build and Push (tag RC)"
+            fi
+        fi
+    fi
 
     # ==============================================================================
-    # FASE 5: LIMPIEZA DE RAMAS DEL BOT (Manual)
+    # FASE 5: LIMPIEZA DE RAMAS DEL BOT (Auto)
     # ==============================================================================
     cleanup_bot_branches auto
 
-    # ==============================================================================
-    # FASE 4: Disparar update-gitops-manifests para STAGING
-    # ==============================================================================
+    # Disparar GitOps
     local changed_paths
     changed_paths="${__gitops_changed_paths:-$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)}"
     maybe_trigger_gitops_update "staging" "$staging_sha" "$changed_paths"
+
+    return 0
 }
 
 # ==============================================================================
