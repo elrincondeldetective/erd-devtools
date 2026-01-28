@@ -170,6 +170,15 @@ promote_dev_monitor() {
 
     # 2) Esperar merge real
     log_info "🔄 Esperando merge del PR #$feature_pr..."
+    # 0) Esperar aprobación humana antes de permitir merge
+    wait_for_pr_approval_or_die "$feature_pr" || return 1
+
+    # 1) Habilitar auto-merge SOLO cuando ya está aprobado
+    log_info "🤖 PR aprobado. Habilitando auto-merge (checks + merge)..."
+    GH_PAGER=cat gh pr merge "$feature_pr" --auto --squash --delete-branch
+
+    # 2) Esperar merge real
+    log_info "🔄 Esperando merge del PR #$feature_pr..."
     local merge_sha
     merge_sha="$(wait_for_pr_merge_and_get_sha "$feature_pr")"
     log_success "PR feature mergeado: ${merge_sha:0:7}"
