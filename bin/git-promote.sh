@@ -40,7 +40,10 @@ source "${PROMOTE_LIB}/workflows.sh"
 # 2. SETUP DE IDENTIDAD
 # ==============================================================================
 # Si no estamos en modo simple, cargamos las llaves SSH antes de empezar
-if [[ "${SIMPLE_MODE:-false}" == "false" ]]; then
+#
+# EXCEPCIÓN: `_dev-monitor` debe ser no-interactivo (puede correr con nohup/sin TTY).
+#
+if [[ "${SIMPLE_MODE:-false}" == "false" && "${1:-}" != "_dev-monitor" ]]; then
     setup_git_identity
 fi
 
@@ -54,6 +57,9 @@ case "$TARGET_ENV" in
     dev)
         promote_to_dev
         ;;
+    _dev-monitor)
+        promote_dev_monitor "${2:-}" "${3:-}"
+        ;;
     staging)
         promote_to_staging
         ;;
@@ -66,6 +72,12 @@ case "$TARGET_ENV" in
     dev-update|feature/dev-update)
         # Permite pasar una rama opcional como segundo argumento
         promote_dev_update_squash "${2:-}"
+        ;;
+    feature/*)
+        # UX: permitir "git promote feature/mi-rama" para aplastar esa rama
+        # dentro de feature/dev-update (y pushear el resultado al remoto).
+        # No interfiere con git promote dev/staging/prod.
+        promote_dev_update_squash "$TARGET_ENV"
         ;;
     hotfix)
         create_hotfix
@@ -82,6 +94,7 @@ case "$TARGET_ENV" in
         echo "  prod                : Promueve staging -> main (gestiona Release Tags)"
         echo "  sync                : Sincronización inteligente (Smart Sync)"
         echo "  feature/dev-update  : Aplasta (squash) una rama dentro de feature/dev-update"
+        echo "  feature/<rama>      : Alias de lo anterior (squash + push a feature/dev-update)"
         echo "  hotfix              : Crea una rama de hotfix desde main"
         echo "  hotfix-finish       : Finaliza e integra el hotfix"
         exit 1
