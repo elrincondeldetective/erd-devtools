@@ -209,6 +209,12 @@ promote_dev_direct_monitor() {
     write_golden_sha "$final_dev_sha" "source=origin/dev post_release_please=${post_rp} feature_branch=${feature_branch:-none} rp_pr=${rp_pr:-none}" || true
     log_success "✅ GOLDEN_SHA capturado: $final_dev_sha"
 
+    # Agregar justo después:
+    if [[ "$post_rp" == "1" ]]; then
+        log_info "ℹ️  Nota: La rama del bot release-please NO se ha borrado."
+        log_info "    Se eliminará automáticamente al ejecutar 'git promote staging'."
+    fi
+
     # GitOps (no invasivo)
     local changed_paths
     changed_paths="$(git diff --name-only "${final_dev_sha}~1..${final_dev_sha}" 2>/dev/null || true)"
