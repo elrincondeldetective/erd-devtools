@@ -40,7 +40,10 @@ source "${PROMOTE_LIB}/workflows.sh"
 # 2. SETUP DE IDENTIDAD
 # ==============================================================================
 # Si no estamos en modo simple, cargamos las llaves SSH antes de empezar
-if [[ "${SIMPLE_MODE:-false}" == "false" ]]; then
+#
+# EXCEPCIÓN: `_dev-monitor` debe ser no-interactivo (puede correr con nohup/sin TTY).
+#
+if [[ "${SIMPLE_MODE:-false}" == "false" && "${1:-}" != "_dev-monitor" ]]; then
     setup_git_identity
 fi
 
