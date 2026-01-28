@@ -150,65 +150,83 @@ promote_dev_direct_monitor() {
 
     log_info "🧠 DEV monitor (direct) iniciado (sha=${pre_bot_sha:0:7}${feature_branch:+, branch=$feature_branch})"
 
-    # Estado 2: release-please (bot) si existe workflow
+    # 1. Versionado (Bot) - Estado 2
     local rp_pr=""
     local rp_merge_sha=""
     local post_rp=0
 
     if repo_has_workflow_file "release-please"; then
         log_info "🤖 Release Please detectado. Esperando ejecución en GitHub Actions..."
+        # Esperamos que el workflow de release-please corra sobre el commit que acabamos de pushear
         __watch_workflow_success_on_sha_or_die "release-please.yaml" "$pre_bot_sha" "dev" "Release Please" || return 1
 
-        log_info "🤖 Buscando PR del bot release-please hacia dev (opcional)..."
+        log_info "🤖 Verificando si el bot creó un PR de release..."
         rp_pr="$(wait_for_release_please_pr_number_optional || true)"
 
         if [[ "${rp_pr:-}" =~ ^[0-9]+$ ]]; then
             post_rp=1
-            log_info "🤖 Habilitando auto-merge para PR del bot (#$rp_pr)..."
+            log_info "🤖 PR del bot detectado (#$rp_pr). Procesando..."
+            
+            # [CRITICAL] Merge sin borrar la rama (NO usamos --delete-branch)
+            # La limpieza se hará únicamente en git promote staging.
             GH_PAGER=cat gh pr merge "$rp_pr" --auto --squash
 
             log_info "🔄 Esperando merge del PR del bot #$rp_pr..."
             rp_merge_sha="$(wait_for_pr_merge_and_get_sha "$rp_pr")"
-            log_success "PR bot mergeado: ${rp_merge_sha:0:7}"
+            log_success "✅ PR bot mergeado. Nuevo SHA: ${rp_merge_sha:0:7}"
+            
+            # Avisar explícitamente que la rama queda viva
+            log_info "ℹ️  La rama release-please--* se conserva hasta la promoción a Staging."
         else
-            log_success "✅ Sin versionado: no se detectó PR release-please--* (o timeout)."
+            log_success "✅ Sin versionado pendiente (Bot no creó PR o no hay cambios de versión)."
         fi
     else
-        log_success "✅ Sin versionado: este repo no tiene workflow release-please."
+        log_success "✅ Este repo no usa release-please."
     fi
 
-    # En este punto, el SHA “válido” es el HEAD remoto de dev (post-bot si existió)
-    local dev_sha
-    dev_sha="$(__remote_head_sha "dev" "origin")"
-    if [[ -z "${dev_sha:-}" ]]; then
-        log_error "No pude resolver origin/dev para capturar GOLDEN_SHA."
+    # 2. Determinar el SHA Final (GOLDEN CANDIDATE)
+    # Si hubo bot merge, el HEAD es nuevo (rp_merge_sha). Si no, es el pre_bot_sha.
+    # Obtenemos la verdad absoluta desde el remoto.
+    local final_dev_sha
+    final_dev_sha="$(__remote_head_sha "dev" "origin")"
+    
+    if [[ -z "${final_dev_sha:-}" ]]; then
+        log_error "No pude resolver origin/dev final para capturar GOLDEN_SHA."
         return 1
     fi
 
-    # Estado 3: build-push si existe
+    # 3. Build (CI) - Estado 3
+    # Ejecutamos build sobre el SHA final (sea el de feature o el del bot)
     if repo_has_workflow_file "build-push"; then
-        __watch_workflow_success_on_sha_or_die "build-push.yaml" "$dev_sha" "dev" "Build and Push" || return 1
+        log_info "🏗️  Verificando Build & Push para el SHA final: ${final_dev_sha:0:7}"
+        __watch_workflow_success_on_sha_or_die "build-push.yaml" "$final_dev_sha" "dev" "Build and Push" || return 1
     else
         log_success "✅ Sin build: este repo no tiene workflow build-push."
     fi
 
-    # Persistir GOLDEN_SHA (post-bot, y post-build si aplica)
-    write_golden_sha "$dev_sha" "source=origin/dev post_release_please=${post_rp} feature_branch=${feature_branch:-none} rp_pr=${rp_pr:-none}" || true
-    log_success "✅ GOLDEN_SHA capturado: $dev_sha"
+    # 4. Persistir GOLDEN_SHA
+    # Este es el único punto de verdad. Lo que llegó aquí pasó Bot y Build.
+    write_golden_sha "$final_dev_sha" "source=origin/dev post_release_please=${post_rp} feature_branch=${feature_branch:-none} rp_pr=${rp_pr:-none}" || true
+    log_success "✅ GOLDEN_SHA capturado: $final_dev_sha"
 
     # GitOps (no invasivo)
     local changed_paths
-    changed_paths="$(git diff --name-only "${dev_sha}~1..${dev_sha}" 2>/dev/null || true)"
-    maybe_trigger_gitops_update "dev" "$dev_sha" "$changed_paths"
+    changed_paths="$(git diff --name-only "${final_dev_sha}~1..${final_dev_sha}" 2>/dev/null || true)"
+    maybe_trigger_gitops_update "dev" "$final_dev_sha" "$changed_paths"
 
-    # Issues pendientes (visibilidad)
+    # 5. Issues pendientes (visibilidad)
     echo
-    log_info "📌 Issues abiertos (top 10):"
-    GH_PAGER=cat gh issue list --state open --limit 10 2>/dev/null || log_warn "No pude listar issues (¿gh auth?)."
+    echo "════════════════════════════════════════════════════"
+    echo "📌 ISSUES PENDIENTES (Para continuar trabajando)"
+    echo "════════════════════════════════════════════════════"
+    if command -v gh >/dev/null 2>&1; then
+        GH_PAGER=cat gh issue list --state open --limit 5 --json number,title,url --template \
+        '{{range .}}• [#{{.number}}] {{.title}} ({{.url}}){{"\n"}}{{end}}' 2>/dev/null || log_warn "No pude listar issues."
+    fi
+    echo "════════════════════════════════════════════════════"
 
-    echo
     banner "✅ DEV LISTO"
-    echo "SHA a promover: $dev_sha"
+    echo "SHA a promover: $final_dev_sha"
     echo "👉 Siguiente paso: git promote staging"
     return 0
 }
