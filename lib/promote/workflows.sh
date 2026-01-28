@@ -428,13 +428,41 @@ promote_to_dev() {
     git checkout dev
 
     # ==============================================================================
-    # FASE 3: Guardar GOLDEN_SHA en modo destructivo (dev = feature SHA)
+    # FASE DE VERIFICACIÓN REMOTA (Visualización + Bot Check)
     # ==============================================================================
+    # Cargamos librería de CI si no está cargada
+    source "${LIB_DIR}/ci/actions.sh" 2>/dev/null || true
+
+    log_info "📡 Esperando confirmación de GitHub Actions..."
+    
+    # 1. Visualizar Build/Tests principal
+    if ! wait_and_watch_workflow "dev"; then
+        log_error "❌ El build en GitHub falló. No se puede promover este estado."
+        exit 1
+    fi
+
+    # 2. Verificar si el Bot (Release Please) generó nuevos commits
+    #    Hacemos pull para ver si la historia avanzó en el remoto
+    log_info "🤖 Verificando cambios automáticos del bot..."
+    git pull origin dev --rebase >/dev/null 2>&1 || true
+
+    # ==============================================================================
+    # FASE 3: Guardar GOLDEN_SHA DEFINITIVO
+    # ==============================================================================
+    # Tomamos el HEAD actual (que puede ser el del push original O uno nuevo del bot)
     local dev_sha
     dev_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+    
     if [[ -n "${dev_sha:-}" ]]; then
-        write_golden_sha "$dev_sha" "source=force_reset from=$current_branch" || true
-        log_success "✅ GOLDEN_SHA capturado: $dev_sha"
+        write_golden_sha "$dev_sha" "source=dev_final from=$current_branch" || true
+        log_success "✅ GOLDEN_SHA capturado (Final): $dev_sha"
+    fi
+
+    # Mostrar issues pendientes para que el dev sepa qué sigue
+    if command -v gh &> /dev/null; then
+        echo
+        echo "📝 Issues abiertos en este repo:"
+        gh issue list --limit 3 --state open || true
     fi
 
     # ==============================================================================
