@@ -54,6 +54,9 @@ case "$TARGET_ENV" in
     dev)
         promote_to_dev
         ;;
+    _dev-monitor)
+        promote_dev_monitor "${2:-}" "${3:-}"
+        ;;
     staging)
         promote_to_staging
         ;;
