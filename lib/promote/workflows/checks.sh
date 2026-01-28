@@ -104,7 +104,7 @@ wait_for_workflow_success_on_ref_or_sha_or_die() {
     while true; do
         if [[ -n "${ref:-}" ]]; then
             run_id="$(
-              GH_PAGER=cat gh run list --workflow "$wf_file" --branch "$ref" -L 30 \
+                GH_PAGER=cat gh run list --workflow "$wf_file" --branch "$ref" -L 30 \
                 --json databaseId,headSha,status,conclusion \
                 --jq ".[] | select(.headSha==\"$sha_full\") | .databaseId" 2>/dev/null | head -n 1
             )"
@@ -112,7 +112,7 @@ wait_for_workflow_success_on_ref_or_sha_or_die() {
 
         if [[ -z "${run_id:-}" ]]; then
             run_id="$(
-              GH_PAGER=cat gh run list --workflow "$wf_file" -L 30 \
+                GH_PAGER=cat gh run list --workflow "$wf_file" -L 30 \
                 --json databaseId,headSha,status,conclusion \
                 --jq ".[] | select(.headSha==\"$sha_full\") | .databaseId" 2>/dev/null | head -n 1
             )"

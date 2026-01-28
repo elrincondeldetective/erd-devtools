@@ -121,8 +121,8 @@ wait_for_release_please_pr_number_optional() {
     while true; do
         local pr_number
         pr_number="$(
-          GH_PAGER=cat gh pr list --base dev --state open --json number,headRefName --jq \
-          '.[] | select(.headRefName | startswith("release-please--")) | .number' 2>/dev/null | head -n 1
+            GH_PAGER=cat gh pr list --base dev --state open --json number,headRefName --jq \
+            '.[] | select(.headRefName | startswith("release-please--")) | .number' 2>/dev/null | head -n 1
         )"
 
         if [[ "${pr_number:-}" =~ ^[0-9]+$ ]]; then
