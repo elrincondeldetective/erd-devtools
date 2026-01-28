@@ -87,7 +87,27 @@ export DEVTOOLS_PR_MERGE_POLL_SECONDS="${DEVTOOLS_PR_MERGE_POLL_SECONDS:-5}"
 export DEVTOOLS_ALLOW_GOLDEN_SHA_MISMATCH="${DEVTOOLS_ALLOW_GOLDEN_SHA_MISMATCH:-0}"
 
 # ==============================================================================
-# 4. DETERMINACIÓN DE MODO (SIMPLE vs PRO)
+# FASE 3.1 (NUEVO): DEFAULTS PARA ESPERA DE APROBACIÓN (Gate Humano)
+# ==============================================================================
+# Objetivo:
+# - Permitir parametrizar la espera de aprobación de PR antes de habilitar auto-merge.
+# - Evitar cuelgues por defecto: timeout=0 significa "sin timeout" (espera indefinida).
+# - Mantener bypass explícito para casos de reparación.
+export DEVTOOLS_PR_APPROVAL_TIMEOUT_SECONDS="${DEVTOOLS_PR_APPROVAL_TIMEOUT_SECONDS:-0}"
+export DEVTOOLS_PR_APPROVAL_POLL_SECONDS="${DEVTOOLS_PR_APPROVAL_POLL_SECONDS:-10}"
+export DEVTOOLS_SKIP_PR_APPROVAL_WAIT="${DEVTOOLS_SKIP_PR_APPROVAL_WAIT:-0}"
+
+# ==============================================================================
+# FASE 3.2 (NUEVO): DEFAULTS PARA ESPERA DE PR DE RELEASE-PLEASE (OPCIONAL)
+# ==============================================================================
+# Objetivo:
+# - Evitar que el flujo se quede bloqueado cuando release-please NO abre PR (caso común).
+# - Por defecto, esperamos un "grace window" corto; 0 = no esperar nunca.
+export DEVTOOLS_RP_PR_WAIT_TIMEOUT_SECONDS="${DEVTOOLS_RP_PR_WAIT_TIMEOUT_SECONDS:-60}"
+export DEVTOOLS_RP_PR_WAIT_POLL_SECONDS="${DEVTOOLS_RP_PR_WAIT_POLL_SECONDS:-2}"
+
+# ==============================================================================
+# 4. DETERMINICIÓN DE MODO (SIMPLE vs PRO)
 # ==============================================================================
 
 # Variable para guardar a dónde hacer push (en modo simple es origin por defecto)
@@ -186,3 +206,4 @@ normalize_profiles_v1() {
 
 # Ejecutamos normalización al cargar config (para todo el runtime)
 normalize_profiles_v1
+

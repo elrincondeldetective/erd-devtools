@@ -18,6 +18,11 @@ wait_for_release_please_pr_number_or_die() {
     local interval="${DEVTOOLS_RP_PR_WAIT_POLL_SECONDS:-5}"
     local elapsed=0
 
+    # Si timeout=0, no esperamos (comportamiento útil para repos donde el bot puede no abrir PR)
+    if [[ "${timeout}" == "0" ]]; then
+        return 1
+    fi
+
     while true; do
         local pr_number
         pr_number="$(
@@ -25,13 +30,14 @@ wait_for_release_please_pr_number_or_die() {
           '.[] | select(.headRefName | startswith("release-please--")) | .number' 2>/dev/null | head -n 1
         )"
 
-        if [[ -n "${pr_number:-}" ]]; then
+        # Solo aceptamos números (evita propagar mensajes/ruido como "pr_number")
+        if [[ "${pr_number:-}" =~ ^[0-9]+$ ]]; then
             echo "$pr_number"
             return 0
         fi
 
         if (( elapsed >= timeout )); then
-            log_error "Timeout esperando PR release-please--* hacia dev."
+            log_error "Timeout esperando PR release-please--* hacia dev." >&2
             return 1
         fi
 
