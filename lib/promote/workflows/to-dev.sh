@@ -67,16 +67,9 @@ wait_for_pr_approval_or_die() {
     log_info "⏳ Esperando aprobación del PR #$pr_number (reviewDecision=APPROVED)..."
 
     while true; do
-        local state decision merged_at
+        local state decision
         state="$(GH_PAGER=cat gh pr view "$pr_number" --json state --jq '.state // ""' 2>/dev/null || echo "")"
         decision="$(GH_PAGER=cat gh pr view "$pr_number" --json reviewDecision --jq '.reviewDecision // ""' 2>/dev/null || echo "")"
-        merged_at="$(GH_PAGER=cat gh pr view "$pr_number" --json mergedAt --jq '.mergedAt // ""' 2>/dev/null || echo "")"
-
-        # ✅ Si ya está mergeado, no tiene sentido esperar aprobación.
-        if [[ -n "${merged_at:-}" && "${merged_at:-null}" != "null" ]]; then
-            log_success "✅ PR #$pr_number ya está MERGED (mergedAt=$merged_at)."
-            return 0
-        fi
 
         if [[ "$decision" == "APPROVED" ]]; then
             log_success "✅ PR #$pr_number aprobado."
@@ -134,17 +127,17 @@ promote_dev_monitor() {
         log_info "🤖 Esperando PR del bot release-please hacia dev..."
         rp_pr="$(wait_for_release_please_pr_number_or_die 2>/dev/null || true)"
 
-        if [[ -n "${rp_pr:-}" ]]; then
+        # ✅ SOLO continuar si rp_pr es numérico (PR number real)
+        if [[ "${rp_pr:-}" =~ ^[0-9]+$ ]]; then
             post_rp=1
             log_info "🤖 Habilitando auto-merge para PR del bot (#$rp_pr)..."
-            # Importante: NO borramos la rama aquí; se limpia en promote staging.
             GH_PAGER=cat gh pr merge "$rp_pr" --auto --squash
 
             log_info "🔄 Esperando merge del PR del bot #$rp_pr..."
             rp_merge_sha="$(wait_for_pr_merge_and_get_sha "$rp_pr")"
             log_success "PR bot mergeado: ${rp_merge_sha:0:7}"
         else
-            log_warn "🤷 No se detectó PR release-please--* en la ventana de espera. Continuando."
+            log_warn "🤷 No se detectó PR release-please--* (o timeout). Continuando."
         fi
     fi
 
