@@ -4,7 +4,7 @@
 # Este módulo contiene los flujos de trabajo principales:
 # - promote_sync_all (Smart Sync)
 # - promote_dev_update_squash
-# - promote_to_dev (incluye auto-merge de PRs)
+# - promote_to_dev (incluye auto-merge de PRs + Bot Release Please)
 # - promote_to_staging
 # - promote_to_prod
 # - create_hotfix / finish_hotfix
@@ -506,7 +506,6 @@ promote_to_staging() {
     # ==============================================================================
     # FASE 4 (MEJORA): Capturar paths cambiados completos (dev -> origin/staging)
     # ==============================================================================
-    # Esto evita perder cambios cuando dev avanzó >1 commit (HEAD~1..HEAD sería incompleto).
     git fetch origin staging >/dev/null 2>&1 || true
     local __gitops_changed_paths
     __gitops_changed_paths="$(git diff --name-only "origin/staging..dev" 2>/dev/null || true)"
@@ -625,7 +624,6 @@ promote_to_staging() {
     fi
 
     ensure_clean_git
-    ensure_local_tracking_branch "staging" "origin" || { log_error "No pude preparar la rama 'staging' desde 'origin/staging'."; exit 1; }
     update_branch_from_remote "staging"
     git merge --ff-only dev
 
