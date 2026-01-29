@@ -44,13 +44,6 @@ promote_to_prod() {
         exit 1
     fi
 
-    local staging_sha
-    staging_sha="$(git rev-parse HEAD 2>/dev/null || true)"
-    if [[ -z "${staging_sha:-}" ]]; then
-        log_error "No pude resolver SHA de STAGING (HEAD)."
-        exit 1
-    fi
-
     log_info "🚀 PROMOCIÓN A PRODUCCIÓN"
     generate_ai_prompt "staging" "origin/main"
 

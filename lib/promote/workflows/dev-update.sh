@@ -153,6 +153,8 @@ promote_dev_update_squash() {
     fi
     
     log_success "✅ Te quedas en: ${canonical}"
+    # ✅ Pedimos al trap que aterrice en canonical si todo sale bien
+    export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="${canonical}"
 
     # ==============================================================================
     # NUEVO: Limpieza automática de la rama feature (Borrado seguro).
@@ -177,6 +179,16 @@ promote_dev_update_squash() {
         fi
     else
         log_info "🛡️  La rama fuente '${source}' es protegida. Se mantiene intacta."
+    fi
+
+    # ==============================================================================
+    # Limpieza con prompt (default Sí) + borra local y remoto, solo feature/** y con excepciones.
+    # Implementado en common.sh: maybe_delete_source_branch
+    # ==============================================================================
+    if declare -F maybe_delete_source_branch >/dev/null; then
+        maybe_delete_source_branch "$source"
+    else
+        log_warn "No está en el código: maybe_delete_source_branch no está cargada. Omitiendo limpieza."
     fi
 
     return 0

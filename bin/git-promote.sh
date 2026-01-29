@@ -58,6 +58,25 @@ cleanup_on_exit() {
     local exit_code=$?
     # Desactivar trap para evitar bucles infinitos
     trap - EXIT INT TERM
+    # ✅ Si un workflow definió landing en éxito, obedecerlo
+    if [[ "$exit_code" -eq 0 && -n "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH:-}" ]]; then
+        echo
+        echo "🛬 Finalizando flujo (éxito): quedando en '${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}'..."
+        git checkout "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}" >/dev/null 2>&1 || true
+        exit $exit_code
+    fi
+
+    # ✅ NUEVO: permitir que los workflows definan dónde aterrizar en éxito
+    # Ej: export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="feature/dev-update"
+    if [[ "$exit_code" -eq 0 && -n "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH:-}" ]]; then
+        echo
+        echo "🛬 Finalizando flujo (éxito): quedando en '${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}'..."
+        if declare -F ensure_local_branch_tracks_remote >/dev/null; then
+            ensure_local_branch_tracks_remote "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}" "origin" >/dev/null 2>&1 || true
+        fi
+        git checkout "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}" >/dev/null 2>&1 || true
+        exit $exit_code
+    fi
 
     # ✅ NUEVO: si fue éxito y REALMENTE tocamos dev, quedarnos en dev
     if [[ "${TARGET_ENV:-}" == "dev" && "$exit_code" -eq 0 && "${DEVTOOLS_TOUCHED_DEV:-0}" == "1" ]]; then
