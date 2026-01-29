@@ -96,22 +96,12 @@ promote_to_staging() {
 
     # --- CAMINO A: AUTOMÁTICO (Solo Push, tags por bot si existen) / O SIN TAGS (consumer mode) ---
     if [[ "$use_remote_tagger" == "1" ]]; then
-        ensure_clean_git
-        ensure_local_tracking_branch "staging" "origin" || { log_error "No pude preparar la rama 'staging' desde 'origin/staging'."; exit 1; }
-        update_branch_from_remote "staging"
-        git merge --ff-only dev
-
-        # Validar SHA
-        local staging_sha dev_sha
-        staging_sha="$(git rev-parse HEAD 2>/dev/null || true)"
-        dev_sha="$(git rev-parse dev 2>/dev/null || true)"
-        if [[ -n "${dev_sha:-}" && -n "${staging_sha:-}" && "$staging_sha" != "$dev_sha" ]]; then
-            log_error "FF-only merge no resultó en el mismo SHA (staging != dev). Abortando."
-            exit 1
-        fi
-
-        git push origin staging
-        log_success "✅ Staging actualizado."
+        local from_branch="${DEVTOOLS_PROMOTE_FROM_BRANCH:-$current}"
+        log_info "📍 Estás en '${from_branch}'. 🧨 Sobrescribiendo historia de 'staging' con 'dev' (${golden_sha})..."
+        force_update_branch_to_sha "staging" "$golden_sha" "origin" || { log_error "No pude sobrescribir 'staging' con SHA ${golden_sha:0:7}."; exit 1; }
+        local staging_sha
+        staging_sha="$golden_sha"
+        log_success "✅ Staging actualizado (overwrite)."
 
         # Esperar RC tag + build del tag (solo si este repo tiene el tagger)
         if repo_has_workflow_file "tag-rc-on-staging"; then
@@ -212,22 +202,12 @@ promote_to_staging() {
         exit 0
     fi
 
-    ensure_clean_git
-    ensure_local_tracking_branch "staging" "origin" || { log_error "No pude preparar la rama 'staging' desde 'origin/staging'."; exit 1; }
-    update_branch_from_remote "staging"
-    git merge --ff-only dev
-
-    # Validar SHA
-    local staging_sha dev_sha
-    staging_sha="$(git rev-parse HEAD 2>/dev/null || true)"
-    dev_sha="$(git rev-parse dev 2>/dev/null || true)"
-    if [[ -n "${dev_sha:-}" && -n "${staging_sha:-}" && "$staging_sha" != "$dev_sha" ]]; then
-        log_error "FF-only merge no resultó en el mismo SHA (staging != dev). Abortando."
-        exit 1
-    fi
-
-    git push origin staging
-    log_success "✅ Staging actualizado."
+    local from_branch="${DEVTOOLS_PROMOTE_FROM_BRANCH:-$current}"
+    log_info "📍 Estás en '${from_branch}'. 🧨 Sobrescribiendo historia de 'staging' con 'dev' (${golden_sha})..."
+    force_update_branch_to_sha "staging" "$golden_sha" "origin" || { log_error "No pude sobrescribir 'staging' con SHA ${golden_sha:0:7}."; exit 1; }
+    local staging_sha
+    staging_sha="$golden_sha"
+    log_success "✅ Staging actualizado (overwrite)."
 
     # Esperar RC tag + build del tag (solo si este repo tiene el tagger)
     if repo_has_workflow_file "tag-rc-on-staging"; then
