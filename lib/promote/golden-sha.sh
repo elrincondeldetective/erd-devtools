@@ -67,6 +67,20 @@ read_golden_sha() {
     [[ -f "$f" ]] || return 1
     head -n 1 "$f" | tr -d '[:space:]'
 }
+print_golden_sha_report() {
+    local context="${1:-GOLDEN_SHA}"
+    local f sha meta
+    f="$(resolve_golden_sha_file)"
+    sha="$(read_golden_sha 2>/dev/null || true)"
+    echo
+    log_info "🔑 ${context}"
+    log_info "   file : $f"
+    log_info "   sha  : ${sha:-"(none)"}"
+    if [[ -f "$f" ]]; then
+        meta="$(tail -n +2 "$f" 2>/dev/null | sed 's/^/   meta: /')"
+        [[ -n "${meta:-}" ]] && echo "$meta"
+    fi
+}
 
 ensure_local_tracking_branch() {
     local branch="$1"

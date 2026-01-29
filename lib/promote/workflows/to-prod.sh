@@ -35,6 +35,14 @@ promote_to_prod() {
     # FASE 3: Validar GOLDEN_SHA en STAGING antes de promover
     # ==============================================================================
     assert_golden_sha_matches_head_or_die "STAGING (antes de promover a MAIN)" || exit 1
+    print_golden_sha_report "Antes de promover a MAIN (en STAGING)"
+
+    local staging_sha
+    staging_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+    if [[ -z "${staging_sha:-}" ]]; then
+        log_error "No pude resolver SHA de STAGING (HEAD)."
+        exit 1
+    fi
 
     local staging_sha
     staging_sha="$(git rev-parse HEAD 2>/dev/null || true)"
@@ -70,6 +78,17 @@ promote_to_prod() {
         local main_sha="$staging_sha"
         log_success "✅ Producción actualizada (overwrite)."
 
+        # Verificación explícita: origin/main == staging_sha (== GOLDEN_SHA)
+        git fetch origin main >/dev/null 2>&1 || true
+        local origin_main
+        origin_main="$(git rev-parse origin/main 2>/dev/null || true)"
+        if [[ "$origin_main" != "$staging_sha" ]]; then
+            log_error "main mismatch: origin/main=${origin_main:0:7} != staging=${staging_sha:0:7}"
+            exit 1
+        fi
+        log_success "✅ Confirmado: origin/main == STAGING_SHA == GOLDEN_SHA (${staging_sha:0:7})"
+        print_tags_at_sha "$main_sha" "tags@origin/main(${main_sha:0:7})"
+
         # Esperar tag final + build del tag (solo si este repo tiene el tagger)
         if repo_has_workflow_file "tag-final-on-main"; then
             local ver
@@ -78,6 +97,7 @@ promote_to_prod() {
                 local final_pattern="^v${ver}$"
                 local final_tag
                 final_tag="$(wait_for_tag_on_sha_or_die "$main_sha" "$final_pattern" "Final tag")"
+                print_tags_at_sha "$main_sha" "tags@sha (post final)"
                 if repo_has_workflow_file "build-push"; then
                     wait_for_workflow_success_on_ref_or_sha_or_die "build-push.yaml" "$main_sha" "$final_tag" "Build and Push (tag final)"
                 fi
@@ -105,6 +125,7 @@ promote_to_prod() {
         force_update_branch_to_sha "main" "$staging_sha" "origin" || { log_error "No pude sobrescribir 'main' con SHA ${staging_sha:0:7}."; exit 1; }
         local main_sha="$staging_sha"
         log_success "✅ Producción actualizada (overwrite, sin tag final)."
+        print_tags_at_sha "$main_sha" "tags@origin/main(${main_sha:0:7})"
 
         local changed_paths
         changed_paths="${__gitops_changed_paths:-$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)}"

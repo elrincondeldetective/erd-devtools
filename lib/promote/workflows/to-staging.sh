@@ -26,6 +26,8 @@ promote_to_staging() {
         git checkout dev >/dev/null 2>&1 || exit 1
     fi
     update_branch_from_remote "dev"
+
+    print_golden_sha_report "Antes de promover a STAGING (en DEV)"
     # ==============================================================================
     # FASE 3: Validar GOLDEN_SHA en DEV antes de promover
     # ==============================================================================
@@ -34,6 +36,7 @@ promote_to_staging() {
     # Capturamos SHA actual para el Build Inmutable
     local golden_sha
     golden_sha="$(git rev-parse HEAD)"
+    log_info "✅ SHA canónico (DEV HEAD): ${golden_sha:0:7}"
     local short_sha="${golden_sha:0:7}"
 
     log_info "🔍 Comparando Dev -> Staging"
@@ -102,6 +105,18 @@ promote_to_staging() {
         local staging_sha="$golden_sha"
         log_success "✅ Staging actualizado (overwrite)."
 
+
+        # Verificación explícita: origin/staging == golden_sha
+        git fetch origin staging >/dev/null 2>&1 || true
+        local origin_staging
+        origin_staging="$(git rev-parse origin/staging 2>/dev/null || true)"
+        if [[ "$origin_staging" != "$golden_sha" ]]; then
+            log_error "staging mismatch: origin/staging=${origin_staging:0:7} != golden=${golden_sha:0:7}"
+            exit 1
+        fi
+        log_success "✅ Confirmado: origin/staging == GOLDEN_SHA (${golden_sha:0:7})"
+        print_tags_at_sha "$staging_sha" "tags@origin/staging(${staging_sha:0:7})"
+
         # Esperar RC tag + build del tag (solo si este repo tiene el tagger)
         if repo_has_workflow_file "tag-rc-on-staging"; then
             local ver
@@ -110,6 +125,8 @@ promote_to_staging() {
                 local rc_pattern="^v${ver}-rc[0-9]+$"
                 local rc_tag
                 rc_tag="$(wait_for_tag_on_sha_or_die "$staging_sha" "$rc_pattern" "RC tag")"
+                # En este punto ya existe el tag sobre el SHA
+                print_tags_at_sha "$staging_sha" "tags@sha (post RC)"
                 if repo_has_workflow_file "build-push"; then
                     wait_for_workflow_success_on_ref_or_sha_or_die "build-push.yaml" "$staging_sha" "$rc_tag" "Build and Push (tag RC)"
                 fi

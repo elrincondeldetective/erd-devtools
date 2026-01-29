@@ -12,6 +12,31 @@
 # HELPERS: Checks y Esperas (Polling)
 # ==============================================================================
 
+print_tags_at_sha() {
+    local sha_full="$1"
+    local label="${2:-tags@sha}"
+    [[ -n "${sha_full:-}" ]] || return 0
+    git fetch origin --tags --force >/dev/null 2>&1 || true
+    local tags
+    tags="$(git tag --points-at "$sha_full" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    if [[ -n "${tags:-}" ]]; then
+        log_info "🏷️  ${label}: ${tags}"
+    else
+        log_info "🏷️  ${label}: (none)"
+    fi
+}
+
+print_run_link() {
+    local run_id="$1"
+    local label="${2:-run}"
+    [[ -n "${run_id:-}" ]] || return 0
+    local url
+    url="$(GH_PAGER=cat gh run view "$run_id" --json htmlURL --jq '.htmlURL' 2>/dev/null || true)"
+    if [[ -n "${url:-}" && "${url:-null}" != "null" ]]; then
+        log_info "🔗 ${label} URL: ${url}"
+    fi
+}
+
 wait_for_release_please_pr_number_or_die() {
     # Espera a que aparezca un PR head release-please--* hacia base dev
     local timeout="${DEVTOOLS_RP_PR_WAIT_TIMEOUT_SECONDS:-900}"
@@ -130,6 +155,8 @@ wait_for_workflow_success_on_ref_or_sha_or_die() {
         sleep "$interval"
         elapsed=$((elapsed + interval))
     done
+    # Link del run (para no ir a la web a ciegas)
+    print_run_link "$run_id" "${label} (run_id=${run_id})"
 
     # ──────────────────────────────────────────────────────────────────────────
     # MODO “PROGRESO REAL” EN VIVO (TTY): gh run watch
