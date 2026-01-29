@@ -59,6 +59,15 @@ cleanup_on_exit() {
     local exit_code=$?
     # Desactivar trap para evitar bucles infinitos
     trap - EXIT INT TERM
+
+
+    # ✅ NUEVO: si fue éxito y el comando fue "dev", nos quedamos en dev
+    if [[ "${TARGET_ENV:-}" == "dev" && "$exit_code" -eq 0 ]]; then
+        echo
+        echo "🛬 Finalizando flujo (éxito): quedando en 'dev'..."
+        git checkout dev >/dev/null 2>&1 || true
+        exit $exit_code
+    fi
     
     # Solo ejecutamos la restauración si NO estamos en modo monitor interno
     # (El monitor interno solía correr en subshell/nohup, aquí protegemos el flujo principal)

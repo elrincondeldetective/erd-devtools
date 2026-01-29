@@ -102,14 +102,15 @@ promote_to_dev() {
         exit 1
     fi
 
-    echo "🔍 Buscando (o creando) PR para '$current_branch' -> dev..."
+    echo "🔍 Buscando PR existente (read-only) para '$current_branch' -> dev..."
     local pr_number
     pr_number="$(GH_PAGER=cat gh pr list --head "$current_branch" --base dev --state open --json number --jq '.[0].number' 2>/dev/null || true)"
 
     if [[ -z "${pr_number:-}" ]]; then
-        ensure_clean_git
-        GH_PAGER=cat gh pr create --base dev --head "$current_branch" --fill
-        pr_number="$(GH_PAGER=cat gh pr list --head "$current_branch" --base dev --state open --json number --jq '.[0].number' 2>/dev/null || true)"
+        log_warn "No existe PR abierto para '$current_branch' -> dev. (Creación deshabilitada)"
+        log_info "Crea el PR con: git pr   (desde esta rama) y re-ejecuta: git promote dev"
+        promote_dev_monitor "" "$current_branch"   # discovery hacia dev
+        exit $?
     fi
 
     if [[ -z "${pr_number:-}" ]]; then
