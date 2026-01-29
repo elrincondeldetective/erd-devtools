@@ -36,6 +36,13 @@ promote_to_prod() {
     # ==============================================================================
     assert_golden_sha_matches_head_or_die "STAGING (antes de promover a MAIN)" || exit 1
 
+    local staging_sha
+    staging_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+    if [[ -z "${staging_sha:-}" ]]; then
+        log_error "No pude resolver SHA de STAGING (HEAD)."
+        exit 1
+    fi
+
     log_info "🚀 PROMOCIÓN A PRODUCCIÓN"
     generate_ai_prompt "staging" "origin/main"
 
@@ -56,25 +63,12 @@ promote_to_prod() {
 
         if ! ask_yes_no "¿Promover a PRODUCCIÓN (sin crear tag local)?"; then exit 0; fi
         ensure_clean_git
-        ensure_local_tracking_branch "main" "origin" || { log_error "No pude preparar la rama 'main' desde 'origin/main'."; exit 1; }
-        update_branch_from_remote "main"
-        git merge --ff-only staging
-
-        # ==============================================================================
-        # FASE 3: Asegurar mismo SHA (main == staging == golden)
-        # ==============================================================================
-        local main_sha staging_sha
-        main_sha="$(git rev-parse HEAD 2>/dev/null || true)"
-        staging_sha="$(git rev-parse staging 2>/dev/null || true)"
-        if [[ -n "${staging_sha:-}" && -n "${main_sha:-}" && "$main_sha" != "$staging_sha" ]]; then
-            log_error "FF-only merge no resultó en el mismo SHA (main != staging). Abortando."
-            echo "   staging: $staging_sha"
-            echo "   main   : $main_sha"
-            exit 1
-        fi
-
-        git push origin main
-        log_success "✅ Producción actualizada."
+        
+        local from_branch="${DEVTOOLS_PROMOTE_FROM_BRANCH:-$current}"
+        log_info "📍 Estás en '${from_branch}'. 🧨 Sobrescribiendo historia de 'main' con 'staging' (${staging_sha})..."
+        force_update_branch_to_sha "main" "$staging_sha" "origin" || { log_error "No pude sobrescribir 'main' con SHA ${staging_sha:0:7}."; exit 1; }
+        local main_sha="$staging_sha"
+        log_success "✅ Producción actualizada (overwrite)."
 
         # Esperar tag final + build del tag (solo si este repo tiene el tagger)
         if repo_has_workflow_file "tag-final-on-main"; then
@@ -105,22 +99,12 @@ promote_to_prod() {
         log_warn "🏷️  No se detectó tagger (tag-final-on-main). Continuando SIN tag final (consumer mode)."
         log_warn "     (Override legacy: DEVTOOLS_ALLOW_LOCAL_TAGS=1 y DEVTOOLS_ENFORCE_GH_TAGS=0)"
         ensure_clean_git
-        ensure_local_tracking_branch "main" "origin" || { log_error "No pude preparar la rama 'main' desde 'origin/main'."; exit 1; }
-        update_branch_from_remote "main"
-        git merge --ff-only staging
-
-        local main_sha staging_sha
-        main_sha="$(git rev-parse HEAD 2>/dev/null || true)"
-        staging_sha="$(git rev-parse staging 2>/dev/null || true)"
-        if [[ -n "${staging_sha:-}" && -n "${main_sha:-}" && "$main_sha" != "$staging_sha" ]]; then
-            log_error "FF-only merge no resultó en el mismo SHA (main != staging). Abortando."
-            echo "   staging: $staging_sha"
-            echo "   main   : $main_sha"
-            exit 1
-        fi
-
-        git push origin main
-        log_success "✅ Producción actualizada (sin tag final)."
+        
+        local from_branch="${DEVTOOLS_PROMOTE_FROM_BRANCH:-$current}"
+        log_info "📍 Estás en '${from_branch}'. 🧨 Sobrescribiendo historia de 'main' con 'staging' (${staging_sha})..."
+        force_update_branch_to_sha "main" "$staging_sha" "origin" || { log_error "No pude sobrescribir 'main' con SHA ${staging_sha:0:7}."; exit 1; }
+        local main_sha="$staging_sha"
+        log_success "✅ Producción actualizada (overwrite, sin tag final)."
 
         local changed_paths
         changed_paths="${__gitops_changed_paths:-$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)}"
@@ -177,24 +161,10 @@ promote_to_prod() {
     fi
 
     ensure_clean_git
-    ensure_local_tracking_branch "main" "origin" || { log_error "No pude preparar la rama 'main' desde 'origin/main'."; exit 1; }
-    update_branch_from_remote "main"
-    git merge --ff-only staging
-
-    # ==============================================================================
-    # FASE 3: Asegurar mismo SHA (main == staging == golden)
-    # ==============================================================================
-    local main_sha staging_sha
-    main_sha="$(git rev-parse HEAD 2>/dev/null || true)"
-    staging_sha="$(git rev-parse staging 2>/dev/null || true)"
-    if [[ -n "${staging_sha:-}" && -n "${main_sha:-}" && "$main_sha" != "$staging_sha" ]]; then
-        rm -f "$tmp_notes"
-        trap - EXIT
-        log_error "FF-only merge no resultó en el mismo SHA (main != staging). Abortando."
-        echo "   staging: $staging_sha"
-        echo "   main   : $main_sha"
-        exit 1
-    fi
+    local from_branch="${DEVTOOLS_PROMOTE_FROM_BRANCH:-$current}"
+    log_info "📍 Estás en '${from_branch}'. 🧨 Sobrescribiendo historia de 'main' con 'staging' (${staging_sha})..."
+    force_update_branch_to_sha "main" "$staging_sha" "origin" || { rm -f "$tmp_notes"; trap - EXIT; log_error "No pude sobrescribir 'main' con SHA ${staging_sha:0:7}."; exit 1; }
+    local main_sha="$staging_sha"
 
     if git rev-parse "$release_tag" >/dev/null 2>&1; then
         log_warn "Tag $release_tag ya existe."
@@ -202,7 +172,6 @@ promote_to_prod() {
         git tag -a "$release_tag" -F "$tmp_notes"
         git push origin "$release_tag"
     fi
-    git push origin main
     log_success "✅ Producción actualizada ($release_tag)."
     
     # [FIX] CRASH FIX para Prod también

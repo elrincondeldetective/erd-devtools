@@ -205,7 +205,6 @@ force_update_branch_to_sha() {
     local remote="${3:-origin}"
 
     [[ -n "${branch:-}" && -n "${sha:-}" ]] || return 2
-
     ensure_clean_git
 
     ensure_local_branch_tracks_remote "$branch" "$remote" || {
@@ -216,7 +215,6 @@ force_update_branch_to_sha() {
     git checkout "$branch" >/dev/null 2>&1 || return 1
     git fetch "$remote" "$branch" >/dev/null 2>&1 || true
     git reset --hard "$sha" >/dev/null 2>&1 || return 1
-
     push_branch_force "$branch" "$remote" || return 1
     return 0
 }

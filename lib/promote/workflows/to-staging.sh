@@ -99,8 +99,7 @@ promote_to_staging() {
         local from_branch="${DEVTOOLS_PROMOTE_FROM_BRANCH:-$current}"
         log_info "📍 Estás en '${from_branch}'. 🧨 Sobrescribiendo historia de 'staging' con 'dev' (${golden_sha})..."
         force_update_branch_to_sha "staging" "$golden_sha" "origin" || { log_error "No pude sobrescribir 'staging' con SHA ${golden_sha:0:7}."; exit 1; }
-        local staging_sha
-        staging_sha="$golden_sha"
+        local staging_sha="$golden_sha"
         log_success "✅ Staging actualizado (overwrite)."
 
         # Esperar RC tag + build del tag (solo si este repo tiene el tagger)
@@ -205,8 +204,7 @@ promote_to_staging() {
     local from_branch="${DEVTOOLS_PROMOTE_FROM_BRANCH:-$current}"
     log_info "📍 Estás en '${from_branch}'. 🧨 Sobrescribiendo historia de 'staging' con 'dev' (${golden_sha})..."
     force_update_branch_to_sha "staging" "$golden_sha" "origin" || { log_error "No pude sobrescribir 'staging' con SHA ${golden_sha:0:7}."; exit 1; }
-    local staging_sha
-    staging_sha="$golden_sha"
+    local staging_sha="$golden_sha"
     log_success "✅ Staging actualizado (overwrite)."
 
     # Esperar RC tag + build del tag (solo si este repo tiene el tagger)

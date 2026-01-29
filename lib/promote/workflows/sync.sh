@@ -13,6 +13,7 @@
 promote_sync_all() {
     local current_branch
     current_branch=$(git branch --show-current)
+    local from_branch="${DEVTOOLS_PROMOTE_FROM_BRANCH:-$current_branch}"
     
     # Definimos la "Rama Madre" de desarrollo
     local canonical_branch="feature/dev-update"
@@ -75,7 +76,7 @@ promote_sync_all() {
     if [[ "$source_branch" == "$canonical_branch" ]]; then
         if [[ "$force_push_source" == "true" ]]; then
             log_warn "🧨 MODO APLASTANTE: forzando push de '$source_branch' (lease)..."
-            git push origin "$source_branch" --force-with-lease
+            push_branch_force "$source_branch" "origin"
         else
             git push origin "$source_branch"
         fi
@@ -84,6 +85,13 @@ promote_sync_all() {
     fi
 
     # Cascada (APLASTANTE)
+    local source_sha
+    source_sha="$(git rev-parse "$source_branch" 2>/dev/null || true)"
+    if [[ -z "${source_sha:-}" ]]; then
+        log_error "No pude resolver SHA de fuente: '$source_branch'."
+        exit 1
+    fi
+
     for target in dev staging main; do
         log_info "🚀 Sincronizando ${target^^} (APLASTANTE)..."
         ensure_local_tracking_branch "$target" "origin" || {
@@ -92,11 +100,8 @@ promote_sync_all() {
         }
         update_branch_from_remote "$target"
 
-        log_warn "🧨 MODO APLASTANTE: sobrescribiendo '$target' con '$source_branch'..."
-        git reset --hard "$source_branch"
-
-        # Preferible a --force: evita pisar trabajo ajeno si el remoto cambió desde tu fetch
-        git push origin "$target" --force-with-lease
+        log_warn "📍 Estás en '${from_branch}'. 🧨 Sobrescribiendo historia de '${target}' con '${source_branch}' (${source_sha})..."
+        force_update_branch_to_sha "$target" "$source_sha" "origin" || { log_error "No pude sobrescribir '$target' con ${source_sha:0:7}."; exit 1; }
     done
 
     # Volver a Casa

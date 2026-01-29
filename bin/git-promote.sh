@@ -37,4 +37,74 @@ source "${PROMOTE_LIB}/gitops-integration.sh"
 source "${PROMOTE_LIB}/workflows.sh"
 
 # ==============================================================================
-# 1.1 CONTEXTO: rama desde la que se
+# 1.1 CONTEXTO: rama desde la que se invoca (antes de cualquier checkout)
+# ==============================================================================
+__devtools_from_branch="$(git branch --show-current 2>/dev/null || true)"
+__devtools_from_branch="$(echo "${__devtools_from_branch:-}" | tr -d '[:space:]')"
+export DEVTOOLS_PROMOTE_FROM_BRANCH="${DEVTOOLS_PROMOTE_FROM_BRANCH:-${__devtools_from_branch:-"(detached)"}}"
+unset __devtools_from_branch
+
+# ==============================================================================
+# 2. SETUP DE IDENTIDAD
+# ==============================================================================
+# Si no estamos en modo simple, cargamos las llaves SSH antes de empezar
+#
+# EXCEPCIÓN: `_dev-monitor` debe ser no-interactivo (puede correr con nohup/sin TTY).
+#
+if [[ "${SIMPLE_MODE:-false}" == "false" && "${1:-}" != "_dev-monitor" ]]; then
+    setup_git_identity
+fi
+
+# ==============================================================================
+# 3. PARSEO DE COMANDOS (ROUTER)
+# ==============================================================================
+
+TARGET_ENV="${1:-}"
+
+case "$TARGET_ENV" in
+    dev)
+        promote_to_dev
+        ;;
+    _dev-monitor)
+        promote_dev_monitor "${2:-}" "${3:-}"
+        ;;
+    staging)
+        promote_to_staging
+        ;;
+    prod)
+        promote_to_prod
+        ;;
+    sync)
+        promote_sync_all
+        ;;
+    dev-update|feature/dev-update)
+        # Permite pasar una rama opcional como segundo argumento
+        promote_dev_update_squash "${2:-}"
+        ;;
+    feature/*)
+        # UX: permitir "git promote feature/mi-rama" para aplastar esa rama
+        # dentro de feature/dev-update (y pushear el resultado al remoto).
+        # No interfiere con git promote dev/staging/prod.
+        promote_dev_update_squash "$TARGET_ENV"
+        ;;
+    hotfix)
+        create_hotfix
+        ;;
+    hotfix-finish)
+        finish_hotfix
+        ;;
+    *) 
+        echo "Uso: git promote [dev | staging | prod | sync | feature/dev-update | hotfix | hotfix-finish]"
+        echo
+        echo "Comandos disponibles:"
+        echo "  dev                 : Promueve feature actual -> dev (o fusiona PR abierto)"
+        echo "  staging             : Promueve dev -> staging (gestiona Tags/RC)"
+        echo "  prod                : Promueve staging -> main (gestiona Release Tags)"
+        echo "  sync                : Sincronización inteligente (Smart Sync)"
+        echo "  feature/dev-update  : Aplasta (squash) una rama dentro de feature/dev-update"
+        echo "  feature/<rama>      : Alias de lo anterior (squash + push a feature/dev-update)"
+        echo "  hotfix              : Crea una rama de hotfix desde main"
+        echo "  hotfix-finish       : Finaliza e integra el hotfix"
+        exit 1
+        ;;
+esac
