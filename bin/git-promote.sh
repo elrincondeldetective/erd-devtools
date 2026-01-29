@@ -37,6 +37,14 @@ source "${PROMOTE_LIB}/gitops-integration.sh"
 source "${PROMOTE_LIB}/workflows.sh"
 
 # ==============================================================================
+# 1.1 CONTEXTO: rama desde la que se invoca (antes de cualquier checkout)
+# ==============================================================================
+__devtools_from_branch="$(git branch --show-current 2>/dev/null || true)"
+__devtools_from_branch="$(echo "${__devtools_from_branch:-}" | tr -d '[:space:]')"
+export DEVTOOLS_PROMOTE_FROM_BRANCH="${DEVTOOLS_PROMOTE_FROM_BRANCH:-${__devtools_from_branch:-"(detached)"}}"
+unset __devtools_from_branch
+
+# ==============================================================================
 # 2. SETUP DE IDENTIDAD
 # ==============================================================================
 # Si no estamos en modo simple, cargamos las llaves SSH antes de empezar
