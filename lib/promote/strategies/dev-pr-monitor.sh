@@ -5,7 +5,7 @@
 # FASES:
 # 1. Discovery (Búsqueda de PRs)
 # 2. Visualization (Dashboard de estado)
-# 3. Interaction (Aprobación humana y ejecución)
+# 3. Interaction (Aprobación, Merge o FORCE PUSH)
 # 4. Post-Processing (Release Please & Golden SHA)
 #
 # Dependencias: utils.sh, helpers/gh-interactions.sh, git-ops.sh
@@ -68,7 +68,7 @@ promote_dev_monitor() {
     done
 
     # --------------------------------------------------------------------------
-    # 3. BUCLE INTERACTIVO (ACTION LOOP) - [TAREA 3 IMPLEMENTADA]
+    # 3. BUCLE INTERACTIVO (ACTION LOOP)
     # --------------------------------------------------------------------------
     local something_merged=0
     
@@ -85,12 +85,13 @@ promote_dev_monitor() {
             echo
             echo "👉 ACCIÓN REQUERIDA para PR #$pr_id:"
             echo "   [a] ✅ Aprobar y Mergear (Auto-Squash)"
+            echo "   [f] ☢️  FORCE PUSH (Ignorar PR y Sobreescribir 'dev')"
             echo "   [s] ⏭️  Saltar (Ignorar por ahora)"
             echo "   [v] 📄 Ver detalles completos (gh view)"
             echo "   [q] 🚪 Cancelar y Salir"
             
             local choice
-            choice="$(ui_read_option "   Opción [a/s/v/q] > ")"
+            choice="$(ui_read_option "   Opción [a/f/s/v/q] > ")"
 
             case "$choice" in
                 a|A)
@@ -113,20 +114,49 @@ promote_dev_monitor() {
                         log_success "✅ Merge completado exitosamente: ${m_sha:0:7}"
                         
                         something_merged=1
-                        break # Salir del while y pasar al siguiente PR (si hubiera)
+                        break 
                     else
-                        log_error "❌ Falló el comando de auto-merge. Revisa permisos o conflictos."
-                        # No hacemos break para permitir reintentar o saltar
+                        log_error "❌ Falló auto-merge. Revisa permisos/conflictos o usa [f] Force Push."
+                    fi
+                    ;;
+
+                f|F)
+                    # OPCIÓN NUCLEAR: Ignora el PR y fuerza el estado actual a dev
+                    echo
+                    log_warn "☢️  ALERTA NUCLEAR: FORCE PUSH"
+                    echo "   Esto tomará tu rama actual (HEAD) y SOBREESCRIBIRÁ 'origin/dev'."
+                    echo "   - Se ignorarán conflictos (tu código gana)."
+                    echo "   - El PR se cerrará automáticamente."
+                    echo
+                    local confirm
+                    confirm="$(ui_read_option "   ¿ESTÁS SEGURO? Escribe 'force' para proceder > ")"
+                    
+                    if [[ "$confirm" == "force" ]]; then
+                        log_info "🔥 Ejecutando: git push origin HEAD:dev --force ..."
+                        if git push origin HEAD:dev --force; then
+                            log_success "✅ 'dev' ha sido aplastado con éxito."
+                            
+                            something_merged=1 
+                            
+                            # Limpieza: Cerramos el PR ya que hicimos bypass
+                            log_info "🧹 Cerrando el PR #$pr_id..."
+                            gh pr close "$pr_id" --delete-branch || true
+                            
+                            break
+                        else
+                            log_error "❌ Falló el force push. Verifica tus permisos."
+                        fi
+                    else
+                        log_info "🧯 Operación cancelada."
                     fi
                     ;;
                     
                 s|S)
                     log_info "⏭️  PR #$pr_id Saltado."
-                    break # Pasar al siguiente PR del for
+                    break 
                     ;;
                     
                 v|V)
-                    # Usamos 'less' para visualización cómoda
                     GH_PAGER=less gh pr view "$pr_id"
                     ;;
                     
@@ -145,10 +175,9 @@ promote_dev_monitor() {
     # --------------------------------------------------------------------------
     # 4. POST-PROCESAMIENTO (BOT & GOLDEN SHA)
     # --------------------------------------------------------------------------
-    # Solo si hubo merges, verificamos consecuencias (release-please, builds, gitops)
 
     if [[ "$something_merged" == "0" ]]; then
-        log_info "ℹ️  No se realizaron merges. Finalizando sin actualizar Golden SHA."
+        log_info "ℹ️  No se realizaron cambios en dev. Finalizando."
         return 0
     fi
 
@@ -160,7 +189,6 @@ promote_dev_monitor() {
 
     if repo_has_workflow_file "release-please"; then
         log_info "🤖 Verificando si 'release-please' genera un PR de release..."
-        # Esperamos un poco a que el workflow reaccione
         rp_pr="$(wait_for_release_please_pr_number_optional)"
         
         if [[ "${rp_pr:-}" =~ ^[0-9]+$ ]]; then
@@ -175,7 +203,7 @@ promote_dev_monitor() {
                 wait_for_pr_merge_and_get_sha "$rp_pr" >/dev/null
                 log_success "✅ Bot mergeado."
             else
-                log_info "⏭️  Bot saltado (quedará pendiente)."
+                log_info "⏭️  Bot saltado."
             fi
         else
             log_info "ℹ️  No se detectó PR de release-please (o timeout). Continuando."
@@ -183,9 +211,16 @@ promote_dev_monitor() {
     fi
 
     # B) Captura del GOLDEN SHA (Estado final de Dev)
+    # Importante: Si hicimos force push, origin/dev ya es nuestro HEAD actual.
     local dev_sha
     dev_sha="$(__remote_head_sha "dev" "origin")"
     
+    if [[ -z "${dev_sha:-}" ]]; then
+        # Fallback de seguridad si __remote_head_sha falla por latencia
+        git fetch origin dev >/dev/null 2>&1
+        dev_sha="$(git rev-parse origin/dev)"
+    fi
+
     if [[ -z "${dev_sha:-}" ]]; then
         log_error "❌ No pude resolver 'origin/dev'. No se puede actualizar Golden SHA."
         return 1
@@ -193,7 +228,6 @@ promote_dev_monitor() {
 
     # C) Verificar Build Final en Dev (Critical Safety Check)
     if repo_has_workflow_file "build-push"; then
-            # Usamos label descriptivo para logs
             wait_for_workflow_success_on_ref_or_sha_or_die "build-push.yaml" "$dev_sha" "dev" "Build Final (Dev)"
     fi
 
