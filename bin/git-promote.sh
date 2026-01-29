@@ -41,7 +41,8 @@ source "${PROMOTE_LIB}/workflows.sh"
 # ==============================================================================
 __devtools_from_branch="$(git branch --show-current 2>/dev/null || true)"
 __devtools_from_branch="$(echo "${__devtools_from_branch:-}" | tr -d '[:space:]')"
-export DEVTOOLS_PROMOTE_FROM_BRANCH="${DEVTOOLS_PROMOTE_FROM_BRANCH:-${__devtools_from_branch:-"(detached)"}}"
+export DEVTOOLS_PROMOTE_FROM_SHA="${DEVTOOLS_PROMOTE_FROM_SHA:-$(git rev-parse HEAD 2>/dev/null || true)}"
+
 unset __devtools_from_branch
 
 # ==============================================================================
@@ -56,7 +57,7 @@ cleanup_on_exit() {
     
     # Solo ejecutamos la restauración si NO estamos en modo monitor interno
     # (El monitor interno solía correr en subshell/nohup, aquí protegemos el flujo principal)
-    if [[ "${1:-}" != "_dev-monitor" ]]; then
+    if [[ "${TARGET_ENV:-}" != "_dev-monitor" ]]; then
         # La función git_restore_branch_safely debe estar en lib/core/git-ops.sh
         if declare -F git_restore_branch_safely >/dev/null; then
             git_restore_branch_safely "$DEVTOOLS_PROMOTE_FROM_BRANCH"

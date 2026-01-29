@@ -108,6 +108,19 @@ __watch_workflow_success_on_sha_or_die() {
     wait_for_workflow_success_on_ref_or_sha_or_die "$wf_file" "$sha_full" "$ref" "$label"
 }
 
+# Encuentra el Run ID más reciente asociado al HEAD de un PR
+gh_find_run_id_for_pr() {
+    local pr="$1"
+    local head_branch head_sha
+    head_branch="$(GH_PAGER=cat gh pr view "$pr" --json headRefName --jq '.headRefName' 2>/dev/null || true)"
+    head_sha="$(GH_PAGER=cat gh pr view "$pr" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)"
+    [[ -n "${head_sha:-}" ]] || return 1
+
+    GH_PAGER=cat gh run list --branch "$head_branch" -L 50 \
+        --json databaseId,headSha,status,conclusion \
+        --jq ".[] | select(.headSha==\"$head_sha\") | .databaseId" 2>/dev/null | head -n 1
+}
+
 # ------------------------------------------------------------------------------
 # Helpers: Descubrimiento y Visualización (TAREA 2)
 # ------------------------------------------------------------------------------
@@ -172,6 +185,19 @@ ui_render_pr_card() {
     echo "   🔗 $url"
     echo "   🌿 Rama: $head"
     echo "────────────────────────────────────────────────────────────────────────────────"
+}
+
+# Muestra detalles completos (Checks + Dashboard opcional si existe run)
+ui_show_pr_details_full() {
+    local pr="$1"
+    local j; j="$(gh_get_pr_rich_details "$pr")"
+    ui_render_pr_card "$j"
+    echo "   🔎 CI/Checks:"
+    gh_get_pr_checks_summary "$pr" | sed 's/^/      /'
+    local run_id; run_id="$(gh_find_run_id_for_pr "$pr" || true)"
+    if [[ -n "${run_id:-}" ]] && declare -F ui_render_run_dashboard >/dev/null; then
+        ui_render_run_dashboard "$run_id" "PR #$pr CI"
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -259,4 +285,42 @@ wait_for_release_please_pr_number_optional() {
         sleep "$interval"
         elapsed=$((elapsed + interval))
     done
+}
+
+# Aprueba el PR y valida que GitHub haya registrado el cambio de estado
+gh_approve_pr_and_validate() {
+    local pr="$1"
+    log_info "👍 Aprobando PR #$pr ..."
+    GH_PAGER=cat gh pr review "$pr" --approve 2>&1 || {
+        log_error "❌ Falló la aprobación del PR #$pr (ver mensaje arriba)."
+        return 1
+    }
+    local decision
+    decision="$(GH_PAGER=cat gh pr view "$pr" --json reviewDecision --jq '.reviewDecision' 2>/dev/null || true)"
+    if [[ "$decision" == "APPROVED" ]]; then
+        log_success "✅ PR #$pr quedó APROBADO."
+        return 0
+    fi
+    log_warn "⚠️ PR #$pr no aparece como APPROVED (reviewDecision=$decision)."
+    return 1
+}
+
+# Monitorea el CI de un PR, esperando primero a que aparezca un Run
+gh_watch_pr_ci() {
+    local pr="$1"; local label="${2:-PR CI}"
+    local run_id=""
+    local tries=60
+    while [[ $tries -gt 0 ]]; do
+        run_id="$(gh_find_run_id_for_pr "$pr" || true)"
+        [[ -n "${run_id:-}" ]] && break
+        log_info "⏳ Esperando run para PR #$pr ... ($tries)"
+        sleep 5
+        tries=$((tries-1))
+    done
+    [[ -n "${run_id:-}" ]] || { log_warn "ℹ️ No encontré run para PR #$pr."; return 0; }
+    
+    declare -F ui_render_run_dashboard >/dev/null && ui_render_run_dashboard "$run_id" "$label"
+    GH_PAGER=cat gh run watch "$run_id" --exit-status 2>&1 || return 1
+    declare -F ui_render_run_dashboard >/dev/null && ui_render_run_dashboard "$run_id" "${label} (final)"
+    return 0
 }

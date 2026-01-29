@@ -276,6 +276,24 @@ git_restore_branch_safely() {
     echo "⚠️  La rama '$target_branch' no existe (¿fue borrada durante el merge?)."
     echo "🔄 Recreando '$target_branch' para mantener contexto..."
 
+    # 2a) Preferir origin/<branch> si existe
+    if git show-ref --verify --quiet "refs/remotes/origin/${target_branch}"; then
+        git fetch origin "$target_branch" >/dev/null 2>&1 || true
+        if git checkout -b "$target_branch" "origin/${target_branch}" >/dev/null 2>&1; then
+            echo "✅ Rama recreada desde origin/${target_branch}."
+            return 0
+        fi
+    fi
+
+    # 2b) Si tenemos SHA inicial guardado, recrear desde ahí
+    if [[ -n "${DEVTOOLS_PROMOTE_FROM_SHA:-}" ]]; then
+        if git checkout -b "$target_branch" "$DEVTOOLS_PROMOTE_FROM_SHA" >/dev/null 2>&1; then
+            echo "✅ Rama recreada desde SHA inicial: ${DEVTOOLS_PROMOTE_FROM_SHA:0:7}"
+            return 0
+        fi
+    fi
+
+    # 2c) Último recurso: HEAD actual
     if git checkout -b "$target_branch" >/dev/null 2>&1; then
         echo "✅ Rama recreada exitosamente. Estás en '$target_branch'."
         echo "📝 NOTA: Esta es una copia nueva. Verifica tu estado con 'git status'."

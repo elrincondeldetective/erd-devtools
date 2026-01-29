@@ -5,7 +5,7 @@
 # FASES:
 # 1. Discovery (Búsqueda de PRs)
 # 2. Visualization (Dashboard de estado)
-# 3. Interaction (Aprobación, Merge o FORCE PUSH)
+# 3. Interaction (Aprobación, Merge o Skip)
 # 4. Post-Processing (Release Please & Golden SHA)
 #
 # Dependencias: utils.sh, helpers/gh-interactions.sh, git-ops.sh
@@ -59,7 +59,9 @@ promote_dev_monitor() {
     # --------------------------------------------------------------------------
     local pr_candidates=()
     
-    if [[ -n "$input_pr" ]]; then
+    if [[ -n "${DEVTOOLS_TARGET_PRS:-}" ]]; then
+        for p in $DEVTOOLS_TARGET_PRS; do pr_candidates+=("$p"); done
+    elif [[ -n "$input_pr" ]]; then
         pr_candidates+=("$input_pr")
     else
         log_info "🔍 Buscando PRs abiertos hacia 'dev'..."
@@ -94,7 +96,7 @@ promote_dev_monitor() {
         
         # C) Detalle de checks resumido
         echo "   🔎 Detalles de CI/Checks:"
-        gh_get_pr_checks_summary "$pr_id" | sed 's/^/      /' | head -n 10
+        gh_get_pr_checks_summary "$pr_id" | sed 's/^/      /'
         echo ""
     done
 
@@ -115,78 +117,20 @@ promote_dev_monitor() {
         while true; do
             echo
             echo "👉 ACCIÓN REQUERIDA para PR #$pr_id:"
-            echo "   [a] ✅ Aprobar y Mergear (Auto-Squash)"
-            echo "   [f] ☢️  FORCE PUSH (Ignorar PR y Sobreescribir 'dev')"
+            echo "   [a] ✅ Aprobar"
             echo "   [s] ⏭️  Saltar (Ignorar por ahora)"
-            echo "   [v] 📄 Ver detalles completos (gh view)"
+            echo "   [v] 📄 Ver detalles completos (checks/jobs/runners)"
+            echo "   [r] 🔄 Refrescar estado"
             echo "   [q] 🚪 Cancelar y Salir"
             
             local choice
-            choice="$(ui_read_option "   Opción [a/f/s/v/q] > ")"
+            choice="$(ui_read_option "   Opción [a/s/v/r/q] > ")"
 
             case "$choice" in
                 a|A)
-                    log_info "🚀 Procesando PR #$pr_id..."
-                    
-                    # 1. Aprobar (Review)
-                    log_info "👍 Enviando aprobación (APPROVE)..."
-                    if ! gh pr review "$pr_id" --approve; then
-                        log_warn "⚠️  No se pudo aprobar (¿Quizás ya aprobaste o eres el autor?). Intentando continuar..."
-                    fi
-
-                    # 2. Habilitar Auto-Merge
-                    log_info "🤖 Configurando Auto-Merge (Squash + Delete Branch)..."
-                    if GH_PAGER=cat gh pr merge "$pr_id" --auto --squash --delete-branch; then
-                        log_info "⏳ Esperando que GitHub complete el merge..."
-                        
-                        # STREAMING: Ver logs mientras se mergea
-                        stream_branch_activity "dev" "Merge Check"
-                        
-                        # 3. Monitorear hasta que el merge ocurra (doble check)
-                        local m_sha
-                        m_sha="$(wait_for_pr_merge_and_get_sha "$pr_id")"
-                        log_success "✅ Merge completado exitosamente: ${m_sha:0:7}"
-                        
-                        something_merged=1
-                        break 
-                    else
-                        log_error "❌ Falló auto-merge. Revisa permisos/conflictos o usa [f] Force Push."
-                    fi
-                    ;;
-
-                f|F)
-                    # OPCIÓN NUCLEAR: Ignora el PR y fuerza el estado actual a dev
-                    echo
-                    log_warn "☢️  ALERTA NUCLEAR: FORCE PUSH"
-                    echo "   Esto tomará tu rama actual (HEAD) y SOBREESCRIBIRÁ 'origin/dev'."
-                    echo "   - Se ignorarán conflictos (tu código gana)."
-                    echo "   - El PR se cerrará automáticamente."
-                    echo
-                    local confirm
-                    confirm="$(ui_read_option "   ¿ESTÁS SEGURO? Escribe 'force' para proceder > ")"
-                    
-                    if [[ "$confirm" == "force" ]]; then
-                        log_info "🔥 Ejecutando: git push origin HEAD:dev --force ..."
-                        if git push origin HEAD:dev --force; then
-                            log_success "✅ 'dev' ha sido aplastado con éxito."
-                            
-                            something_merged=1 
-                            
-                            # Limpieza: Cerramos el PR ya que hicimos bypass
-                            # [FIX] Silenciamos output de error por si ya estaba cerrado
-                            log_info "🧹 Limpiando PR #$pr_id..."
-                            gh pr close "$pr_id" --delete-branch >/dev/null 2>&1 || true
-                            
-                            # STREAMING: Ver logs inmediatamente después del force push
-                            stream_branch_activity "dev" "Post-Force-Push Build"
-                            
-                            break
-                        else
-                            log_error "❌ Falló el force push. Verifica tus permisos."
-                        fi
-                    else
-                        log_info "🧯 Operación cancelada."
-                    fi
+                    gh_approve_pr_and_validate "$pr_id" || true
+                    gh_watch_pr_ci "$pr_id" "Post-Approve CI" || true
+                    break
                     ;;
                     
                 s|S)
@@ -195,7 +139,15 @@ promote_dev_monitor() {
                     ;;
                     
                 v|V)
-                    GH_PAGER=less gh pr view "$pr_id"
+                    ui_show_pr_details_full "$pr_id"
+                    ;;
+
+                r|R)
+                    log_info "🔄 Refrescando PR #$pr_id..."
+                    local fresh; fresh="$(gh_get_pr_rich_details "$pr_id")"
+                    ui_render_pr_card "$fresh"
+                    echo "   🔎 Detalles de CI/Checks:"
+                    gh_get_pr_checks_summary "$pr_id" | sed 's/^/      /'
                     ;;
                     
                 q|Q)
