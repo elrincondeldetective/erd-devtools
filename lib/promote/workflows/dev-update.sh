@@ -155,7 +155,7 @@ promote_dev_update_squash() {
     log_success "✅ Te quedas en: ${canonical}"
 
     # ==============================================================================
-    # NUEVO: Limpieza automática de la rama feature (Borrado seguro)
+    # NUEVO: Limpieza automática de la rama feature (Borrado seguro).
     # ==============================================================================
     local protected_branches=("main" "dev" "staging" "feature/dev-update")
     local is_protected=0
