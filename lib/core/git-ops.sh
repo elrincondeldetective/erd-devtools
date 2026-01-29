@@ -180,6 +180,46 @@ update_branch_from_remote() {
 }
 
 # ==============================================================================
+# 4.1 PUSH DESTRUCTIVO (force / force-with-lease)
+# ==============================================================================
+
+# DEVTOOLS_FORCE_PUSH_MODE:
+# - with-lease (default): git push --force-with-lease
+# - force             : git push --force
+push_branch_force() {
+    local branch="$1"
+    local remote="${2:-origin}"
+    local mode="${DEVTOOLS_FORCE_PUSH_MODE:-with-lease}"
+
+    if [[ "$mode" == "force" ]]; then
+        git push "$remote" "$branch" --force
+    else
+        git push "$remote" "$branch" --force-with-lease
+    fi
+}
+
+# Checkout <branch>, reset --hard <sha>, y force-push a <remote>/<branch>
+force_update_branch_to_sha() {
+    local branch="$1"
+    local sha="$2"
+    local remote="${3:-origin}"
+
+    [[ -n "${branch:-}" && -n "${sha:-}" ]] || return 2
+    ensure_clean_git
+
+    ensure_local_branch_tracks_remote "$branch" "$remote" || {
+        echo "❌ No pude preparar la rama '$branch' desde '$remote/$branch'." >&2
+        return 1
+    }
+
+    git checkout "$branch" >/dev/null 2>&1 || return 1
+    git fetch "$remote" "$branch" >/dev/null 2>&1 || true
+    git reset --hard "$sha" >/dev/null 2>&1 || return 1
+    push_branch_force "$branch" "$remote" || return 1
+    return 0
+}
+
+# ==============================================================================
 # 5. DIAGNÓSTICO DE IDENTIDAD
 # ==============================================================================
 

@@ -233,10 +233,14 @@ promote_dev_direct_monitor() {
 
 promote_to_dev_direct() {
     resync_submodules_hard
-    ensure_clean_git
+    ensure_clean_git_or_die
 
     local feature_branch
-    feature_branch="$(git branch --show-current 2>/dev/null || echo "")"
+    feature_branch="${DEVTOOLS_PROMOTE_FROM_BRANCH}"
+
+    if [[ -z "${feature_branch:-}" || "$feature_branch" == "(detached)" ]]; then
+        feature_branch="$(git branch --show-current 2>/dev/null || echo "")"
+    fi
 
     if [[ -z "${feature_branch:-}" ]]; then
         log_error "No pude detectar la rama actual."
@@ -253,7 +257,7 @@ promote_to_dev_direct() {
         exit 1
     fi
 
-    banner "🧨 PROMOTE DEV (DIRECTO / SQUASH LOCAL)"
+    banner "🧨 PROMOTE DEV (APLASTANTE / RESET HARD)"
     log_info "Fuente: $feature_branch"
 
     # Preparar dev local tracking + actualizar desde remoto
@@ -263,56 +267,51 @@ promote_to_dev_direct() {
     local dev_before
     dev_before="$(git rev-parse HEAD 2>/dev/null || true)"
 
-    # Hacer squash merge de feature -> dev (sin PR)
-    log_info "🧨 Aplicando squash local: ${feature_branch} -> dev"
-    if ! git merge --squash -X theirs "$feature_branch"; then
-        log_error "Conflictos en squash merge. Abortando."
-        git merge --abort >/dev/null 2>&1 || true
+    # --- CAMBIO ESTRATÉGICO: Promoción Aplastante (Reset Hard) ---
+    log_info "🧨 Aplicando reset hard: dev -> ${feature_branch}"
+    if ! git reset --hard "$feature_branch"; then
+        log_error "Fallo crítico al aplicar reset --hard. Restaurando dev..."
+        git reset --hard "$dev_before" >/dev/null 2>&1 || true
         exit 1
     fi
 
-    # Si no hay cambios staged, no hacemos commit/push; igual registramos golden como HEAD(dev).
-    if git diff --cached --quiet; then
-        log_warn "No hay cambios para promover (feature ya está reflejada en dev)."
+    # Si por alguna razón el reset no generó diferencias con el remoto (raro en aplastante)
+    if git diff origin/dev..HEAD --quiet; then
+        log_warn "No hay cambios para promover (destino ya es idéntico a fuente)."
         local current_dev_sha
         current_dev_sha="$(__remote_head_sha "dev" "origin")"
-        if [[ -z "${current_dev_sha:-}" ]]; then
-            log_error "No pude resolver origin/dev."
-            exit 1
-        fi
         write_golden_sha "$current_dev_sha" "source=origin/dev post_release_please=0 feature_branch=${feature_branch} note=no_changes" || true
         log_success "✅ GOLDEN_SHA capturado (sin cambios): $current_dev_sha"
         echo "👉 Siguiente paso: git promote staging"
-        git checkout "$feature_branch" >/dev/null 2>&1 || true
+        # Aterrizaje obligatorio en dev según requerimiento
         exit 0
     fi
 
-    # Commit squash
-    local title body
-    title="promote(dev): squash ${feature_branch}"
-    body="$(
-      git log --pretty=format:'- %s (%h)' "${dev_before}..${feature_branch}" 2>/dev/null | head -n 50 || true
-    )"
-    [[ -n "${body:-}" ]] || body="(no commit list available)"
+    # --- NO-REGRESIÓN: Preservamos la creación de commit de integración si se desea ---
+    # Nota: En reset --hard el commit ya existe, pero si el usuario quiere un commit de "promote" 
+    # encima para trazabilidad, se puede hacer, aunque lo estándar en reset es usar el de la fuente.
+    # Aquí cumplimos el landing en DESTINO.
 
-    git commit -m "$title" -m "$body"
-
-    # Push directo a dev (sin prompts)
-    log_info "📡 Pusheando dev a origin..."
-    if ! git push origin dev; then
-        log_warn "Push rechazado. Reintentando una vez (refetch + re-squash)..."
+    # Push directo a dev (con reintento de no-regresión)
+    log_info "📡 Pusheando dev a origin (force-with-lease)..."
+    if ! git push origin dev --force-with-lease; then
+        log_warn "Push rechazado. Reintentando una vez (refetch + re-reset)..."
         git fetch origin dev >/dev/null 2>&1 || true
-        git reset --hard origin/dev >/dev/null 2>&1 || true
-        git merge --squash -X theirs "$feature_branch" || { log_error "Reintento falló. Revisa manualmente."; exit 1; }
-        git commit -m "$title" -m "$body"
-        git push origin dev || { log_error "No pude pushear dev (después de reintento)."; exit 1; }
+        git checkout dev >/dev/null 2>&1 || true
+        git reset --hard "$feature_branch" || { log_error "Reintento falló. Revisa manualmente."; exit 1; }
+        git push origin dev --force-with-lease || { log_error "No pude pushear dev (después de reintento)."; exit 1; }
     fi
-    log_success "✅ Dev actualizado (push directo)."
+    log_success "✅ Dev actualizado (push aplastante)."
 
-    # Volver a la feature para que el dev pueda seguir trabajando
-    git checkout "$feature_branch" >/dev/null 2>&1 || true
+    # --- NUEVA LÓGICA: Borrado opcional de fuente ---
+    if declare -F maybe_delete_source_branch >/dev/null; then
+        maybe_delete_source_branch "$feature_branch"
+    fi
 
-    # Capturar SHA del push (pre-bot) y monitorear bot/build hasta GOLDEN_SHA final
+    # --- ATERRIZAJE: Quedamos en dev ---
+    git checkout dev >/dev/null 2>&1 || true
+
+    # Capturar SHA del push (pre-bot) y monitorear
     local pre_bot_sha
     pre_bot_sha="$(__remote_head_sha "dev" "origin")"
     [[ -n "${pre_bot_sha:-}" ]] || { log_error "No pude resolver origin/dev post-push."; exit 1; }

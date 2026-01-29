@@ -6,6 +6,7 @@
 # - resync_submodules_hard
 # - cleanup_bot_branches
 # - __read_repo_version
+# - maybe_delete_source_branch (NUEVO: Borrado inteligente de ramas fuente)
 #
 # Dependencias: utils.sh (para log_info, log_warn, ask_yes_no, etc.)
 
@@ -92,5 +93,49 @@ cleanup_bot_branches() {
         log_success "🧹 Limpieza completada."
     else
         log_warn "Omitiendo limpieza de ramas."
+    fi
+}
+
+# ==============================================================================
+# LÓGICA DE BORRADO DE RAMA FUENTE (Implementación Tarea 3)
+# ==============================================================================
+
+# Gestiona el borrado opcional de la rama fuente tras una promoción exitosa.
+# Respeta excepciones de ramas protegidas y solo actúa sobre feature/**.
+maybe_delete_source_branch() {
+    local branch="$1"
+    
+    if [[ -z "${branch:-}" || "$branch" == "(detached)" ]]; then
+        return 0
+    fi
+
+    # 1. EXCEPCIONES CRÍTICAS: Nunca ofrecer borrar estas ramas
+    case "$branch" in
+        main|dev|staging|master|feature/dev-update)
+            log_info "📌 Rama fuente '$branch' es una excepción protegida. Manteniéndola."
+            return 0
+            ;;
+    esac
+
+    # 2. FILTRO DE PATRÓN: Solo ofrecer borrado para ramas feature/
+    if [[ ! "$branch" =~ ^feature/ ]]; then
+        return 0
+    fi
+
+    # 3. INTERACCIÓN (Default: Sí)
+    echo
+    log_warn "🚀 Promoción completada con éxito."
+    if ask_yes_no "¿Deseas borrar la rama fuente '$branch' (local y remoto)?"; then
+        log_info "🔥 Eliminando rama local: $branch"
+        # Borrado forzado (D) porque ya estamos en la rama destino y el reset-hard 
+        # garantiza que el contenido está a salvo en la rama destino.
+        git branch -D "$branch" || log_warn "No se pudo borrar la rama local '$branch'."
+        
+        log_info "🔥 Eliminando rama remota: origin/$branch"
+        git push origin --delete "$branch" || log_warn "No se pudo borrar la rama remota en origin."
+        
+        log_success "🧹 Limpieza de '$branch' completada."
+    else
+        log_info "📌 Manteniendo rama fuente '$branch' por elección del usuario."
     fi
 }
