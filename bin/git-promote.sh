@@ -45,12 +45,18 @@ export DEVTOOLS_PROMOTE_FROM_BRANCH="${DEVTOOLS_PROMOTE_FROM_BRANCH:-${__devtool
 unset __devtools_from_branch
 
 # ==============================================================================
-# 2. SETUP DE IDENTIDAD
+# 2. PARSEO DE FLAGS Y SETUP DE IDENTIDAD
 # ==============================================================================
+
+# Soporte para flag de auto-confirmación (útil para CI/Automación)
+DEVTOOLS_AUTO_APPROVE=false
+if [[ "${1:-}" == "-y" || "${1:-}" == "--yes" ]]; then
+    export DEVTOOLS_AUTO_APPROVE=true
+    shift # Elimina el flag de los argumentos para no romper el router
+fi
+
 # Si no estamos en modo simple, cargamos las llaves SSH antes de empezar
-#
 # EXCEPCIÓN: `_dev-monitor` debe ser no-interactivo (puede correr con nohup/sin TTY).
-#
 if [[ "${SIMPLE_MODE:-false}" == "false" && "${1:-}" != "_dev-monitor" ]]; then
     setup_git_identity
 fi
@@ -60,6 +66,30 @@ fi
 # ==============================================================================
 
 TARGET_ENV="${1:-}"
+
+# --- Guardias de Seguridad y Confirmación ---
+if [[ -n "$TARGET_ENV" && "$TARGET_ENV" != "_dev-monitor" ]]; then
+    
+    # 1. Validar que el working tree esté limpio antes de cualquier operación destructiva
+    if declare -F ensure_clean_git_or_die >/dev/null; then
+        ensure_clean_git_or_die
+    else
+        ensure_clean_git # Fallback a git-ops.sh si checks.sh no está cargado
+    fi
+
+    # 2. Confirmación Obligatoria (Anti-errores)
+    if [[ "$DEVTOOLS_AUTO_APPROVE" == "false" ]]; then
+        echo
+        log_warn "⚠️  OPERACIÓN DE PROMOCIÓN APLASTANTE (Destructive Promotion)"
+        echo "Contenido de la rama destino '$TARGET_ENV' será reemplazado por '$DEVTOOLS_PROMOTE_FROM_BRANCH'."
+        echo "Esto ejecutará un 'reset --hard' y 'push --force-with-lease' en el remoto."
+        echo
+        if ! ask_yes_no "¿Estás seguro de que deseas continuar?"; then
+            log_info "Operación cancelada. No se realizaron cambios."
+            exit 0
+        fi
+    fi
+fi
 
 case "$TARGET_ENV" in
     dev)
@@ -84,7 +114,6 @@ case "$TARGET_ENV" in
     feature/*)
         # UX: permitir "git promote feature/mi-rama" para aplastar esa rama
         # dentro de feature/dev-update (y pushear el resultado al remoto).
-        # No interfiere con git promote dev/staging/prod.
         promote_dev_update_squash "$TARGET_ENV"
         ;;
     hotfix)
@@ -94,10 +123,10 @@ case "$TARGET_ENV" in
         finish_hotfix
         ;;
     *) 
-        echo "Uso: git promote [dev | staging | prod | sync | feature/dev-update | hotfix | hotfix-finish]"
+        echo "Uso: git promote [-y | --yes] [dev | staging | prod | sync | feature/dev-update | hotfix | hotfix-finish]"
         echo
         echo "Comandos disponibles:"
-        echo "  dev                 : Promueve feature actual -> dev (o fusiona PR abierto)"
+        echo "  dev                 : Promueve feature actual -> dev (Aplastante)"
         echo "  staging             : Promueve dev -> staging (gestiona Tags/RC)"
         echo "  prod                : Promueve staging -> main (gestiona Release Tags)"
         echo "  sync                : Sincronización inteligente (Smart Sync)"
@@ -105,6 +134,9 @@ case "$TARGET_ENV" in
         echo "  feature/<rama>      : Alias de lo anterior (squash + push a feature/dev-update)"
         echo "  hotfix              : Crea una rama de hotfix desde main"
         echo "  hotfix-finish       : Finaliza e integra el hotfix"
+        echo
+        echo "Opciones:"
+        echo "  -y, --yes           : Salta las confirmaciones de seguridad (Modo no-interactivo)"
         exit 1
         ;;
 esac

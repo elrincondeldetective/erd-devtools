@@ -173,3 +173,21 @@ wait_for_workflow_success_on_ref_or_sha_or_die() {
         elapsed=$((elapsed + interval))
     done
 }
+
+# ==============================================================================
+# GUARDIA DE INTEGRIDAD: Validación de Working Tree Limpio
+# ------------------------------------------------------------------------------
+# Acción: Verifica si hay cambios locales (staged o unstaged).
+# Efecto: Aborta la ejecución (exit 1) si el repositorio está "sucio".
+# Razón: La promoción aplastante sobreescribe el estado actual; un repo limpio
+#        garantiza que no se pierda código sin commitear.
+# ==============================================================================
+ensure_clean_git_or_die() {
+    if [[ -n "$(git status --porcelain)" ]]; then
+        echo
+        log_error "❌ REPO SUCIO: Tienes cambios sin commitear."
+        log_warn "La promoción aplastante requiere un working tree limpio para evitar pérdida de datos."
+        echo "Sugerencia: git add . && git commit -m 'savepoint' o git stash"
+        exit 1
+    fi
+}
