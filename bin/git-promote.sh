@@ -39,11 +39,16 @@ source "${PROMOTE_LIB}/workflows.sh"
 # ==============================================================================
 # 1.1 CONTEXTO: rama desde la que se invoca (antes de cualquier checkout)
 # ==============================================================================
-__devtools_from_branch="$(git branch --show-current 2>/dev/null || true)"
-__devtools_from_branch="$(echo "${__devtools_from_branch:-}" | tr -d '[:space:]')"
-export DEVTOOLS_PROMOTE_FROM_SHA="${DEVTOOLS_PROMOTE_FROM_SHA:-$(git rev-parse HEAD 2>/dev/null || true)}"
+# ✅ FIX: Inicializar la rama actual antes de cualquier operación para evitar error de 'unbound variable'
+export DEVTOOLS_PROMOTE_FROM_BRANCH="$(git branch --show-current 2>/dev/null || true)"
+export DEVTOOLS_PROMOTE_FROM_BRANCH="$(echo "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}" | tr -d '[:space:]')"
 
-unset __devtools_from_branch
+# Si por alguna razón estamos en 'detached HEAD', evitar que falle el script vacío
+if [[ -z "$DEVTOOLS_PROMOTE_FROM_BRANCH" ]]; then
+    export DEVTOOLS_PROMOTE_FROM_BRANCH="(detached)"
+fi
+
+export DEVTOOLS_PROMOTE_FROM_SHA="${DEVTOOLS_PROMOTE_FROM_SHA:-$(git rev-parse HEAD 2>/dev/null || true)}"
 
 # ==============================================================================
 # 1.2 SEGURIDAD DE RAMAS (LANDING TRAP) - [NUEVO]
@@ -59,12 +64,13 @@ cleanup_on_exit() {
     # (El monitor interno solía correr en subshell/nohup, aquí protegemos el flujo principal)
     if [[ "${TARGET_ENV:-}" != "_dev-monitor" ]]; then
         # La función git_restore_branch_safely debe estar en lib/core/git-ops.sh
+        # ✅ FIX: Usamos expansión segura :- para evitar error si la variable no existiera
         if declare -F git_restore_branch_safely >/dev/null; then
-            git_restore_branch_safely "$DEVTOOLS_PROMOTE_FROM_BRANCH"
+            git_restore_branch_safely "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}"
         else
             # Fallback básico por si no se actualizó git-ops.sh
-            echo "⚠️  Finalizando script. Volviendo a $DEVTOOLS_PROMOTE_FROM_BRANCH..."
-            git checkout "$DEVTOOLS_PROMOTE_FROM_BRANCH" >/dev/null 2>&1 || true
+            echo "⚠️  Finalizando script. Volviendo a ${DEVTOOLS_PROMOTE_FROM_BRANCH:-}..."
+            git checkout "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}" >/dev/null 2>&1 || true
         fi
     fi
     exit $exit_code
@@ -109,7 +115,7 @@ if [[ -n "$TARGET_ENV" && "$TARGET_ENV" != "_dev-monitor" ]]; then
     if [[ "$DEVTOOLS_AUTO_APPROVE" == "false" ]]; then
         echo
         log_warn "⚠️  OPERACIÓN DE PROMOCIÓN APLASTANTE (Destructive Promotion)"
-        echo "Contenido de la rama destino '$TARGET_ENV' será reemplazado por '$DEVTOOLS_PROMOTE_FROM_BRANCH'."
+        echo "Contenido de la rama destino '$TARGET_ENV' será reemplazado por '${DEVTOOLS_PROMOTE_FROM_BRANCH}'."
         echo "Esto ejecutará un 'reset --hard' y 'push --force-with-lease' en el remoto."
         echo
         if ! ask_yes_no "¿Estás seguro de que deseas continuar?"; then
