@@ -138,7 +138,7 @@ gh_get_pr_checks_summary() {
 ui_render_pr_card() {
     local pr_json="$1"
     
-    # Parseo seguro con jq (asumiendo que está disponible, si no, fallback simple)
+    # Parseo seguro con jq
     local num title url head decision mergeable ci_state
     num="$(echo "$pr_json" | jq -r '.number // "0"')"
     title="$(echo "$pr_json" | jq -r '.title // "Sin título"')"
@@ -146,8 +146,11 @@ ui_render_pr_card() {
     head="$(echo "$pr_json" | jq -r '.headRefName // "?"')"
     decision="$(echo "$pr_json" | jq -r '.reviewDecision // "NONE"')"
     mergeable="$(echo "$pr_json" | jq -r '.mergeable // "UNKNOWN"')"
-    # Extraer estado general del CI
-    ci_state="$(echo "$pr_json" | jq -r '.statusCheckRollup.state // "NO_CI"')"
+    
+    # [FIX] Validación defensiva para statusCheckRollup.
+    # Si el PR es nuevo, statusCheckRollup puede ser [] (array vacío) en vez de objeto.
+    # Verificamos el tipo antes de intentar acceder a .state
+    ci_state="$(echo "$pr_json" | jq -r 'if (.statusCheckRollup | type) == "object" then (.statusCheckRollup.state // "NO_CI") else "NO_CI" end')"
 
     # Iconografía
     local icon_ci="⚪"
