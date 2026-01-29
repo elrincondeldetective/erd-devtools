@@ -117,20 +117,69 @@ promote_dev_monitor() {
         while true; do
             echo
             echo "👉 ACCIÓN REQUERIDA para PR #$pr_id:"
-            echo "   [a] ✅ Aprobar"
-            echo "   [s] ⏭️  Saltar (Ignorar por ahora)"
+            echo "   [a] ✅ Aprobar (solo review)"
+            echo "   [m] 🤖 Merge (Auto-Squash)  ← dispara CI en dev"
+            echo "   [f] ☢️  Reset --hard + Force Push a dev  ← admin bypass"
+            echo "   [s] ⏭️  Saltar"
             echo "   [v] 📄 Ver detalles completos (checks/jobs/runners)"
             echo "   [r] 🔄 Refrescar estado"
             echo "   [q] 🚪 Cancelar y Salir"
             
             local choice
-            choice="$(ui_read_option "   Opción [a/s/v/r/q] > ")"
+            choice="$(ui_read_option "   Opción [a/m/f/s/v/r/q] > ")"
 
             case "$choice" in
                 a|A)
-                    gh_approve_pr_and_validate "$pr_id" || true
-                    gh_watch_pr_ci "$pr_id" "Post-Approve CI" || true
+                    if gh_approve_pr_and_validate "$pr_id"; then
+                        # Solo intentamos watch si existe CI en PR (si no hay, no colgarse)
+                        gh_watch_pr_ci "$pr_id" "Post-Approve CI" || true
+                    else
+                        log_warn "ℹ️ No se pudo aprobar (posible: no puedes aprobar tu propio PR). Usa [m] o [f]."
+                    fi
                     break
+                    ;;
+
+                m|M)
+                    log_info "🤖 Configurando Auto-Merge (Squash + Delete Branch)..."
+                    # Si eres admin y necesitas bypass de reglas: export DEVTOOLS_MERGE_ADMIN_BYPASS=1
+                    local merge_cmd=(pr merge "$pr_id" --auto --squash --delete-branch)
+                    [[ "${DEVTOOLS_MERGE_ADMIN_BYPASS:-0}" == "1" ]] && merge_cmd+=(--admin)
+                    if GH_PAGER=cat gh "${merge_cmd[@]}" 2>&1; then
+                        log_info "⏳ Esperando que GitHub complete el merge..."
+                        stream_branch_activity "dev" "Merge Check"
+                        local m_sha
+                        m_sha="$(wait_for_pr_merge_and_get_sha "$pr_id")"
+                        log_success "✅ Merge completado: ${m_sha:0:7}"
+                        something_merged=1
+                        break
+                    else
+                        log_error "❌ Falló auto-merge. Revisa permisos/reglas. Alternativa: [f] Force Push."
+                    fi
+                    ;;
+
+                f|F)
+                    echo
+                    log_warn "☢️  FORCE PUSH (Reset --hard + Push) a origin/dev"
+                    echo "   Esto sobreescribe dev con el SHA de tu rama actual."
+                    local confirm
+                    confirm="$(ui_read_option "   Escribe 'force' para proceder > ")"
+                    if [[ "$confirm" == "force" ]]; then
+                        local sha
+                        sha="$(git rev-parse HEAD)"
+                        log_info "🔥 Forzando dev => ${sha:0:7}"
+                        if force_update_branch_to_sha "dev" "$sha" "origin"; then
+                            log_success "✅ dev actualizado por force push."
+                            log_info "🧹 Cerrando PR #$pr_id (opcional)..."
+                            GH_PAGER=cat gh pr close "$pr_id" --delete-branch 2>&1 || true
+                            stream_branch_activity "dev" "Post-Force-Push Build"
+                            something_merged=1
+                            break
+                        else
+                            log_error "❌ Falló el force push. Verifica permisos/branch protection."
+                        fi
+                    else
+                        log_info "🧯 Operación cancelada."
+                    fi
                     ;;
                     
                 s|S)

@@ -291,8 +291,13 @@ wait_for_release_please_pr_number_optional() {
 gh_approve_pr_and_validate() {
     local pr="$1"
     log_info "👍 Aprobando PR #$pr ..."
-    GH_PAGER=cat gh pr review "$pr" --approve 2>&1 || {
-        log_error "❌ Falló la aprobación del PR #$pr (ver mensaje arriba)."
+    local out
+    out="$(GH_PAGER=cat gh pr review "$pr" --approve 2>&1)" || {
+        echo "$out" >&2
+        if echo "$out" | grep -qi "approve your own pull request"; then
+            log_warn "🚫 GitHub no permite aprobar tu propio PR. Usa [m] merge (admin) o [f] force push."
+        fi
+        log_error "❌ Falló la aprobación del PR #$pr."
         return 1
     }
     local decision
@@ -317,7 +322,10 @@ gh_watch_pr_ci() {
         sleep 5
         tries=$((tries-1))
     done
-    [[ -n "${run_id:-}" ]] || { log_warn "ℹ️ No encontré run para PR #$pr."; return 0; }
+    [[ -n "${run_id:-}" ]] || {
+        log_warn "ℹ️ No encontré runs para PR #$pr (puede que tu CI corra solo al merge/push a dev)."
+        return 0
+    }
     
     declare -F ui_render_run_dashboard >/dev/null && ui_render_run_dashboard "$run_id" "$label"
     GH_PAGER=cat gh run watch "$run_id" --exit-status 2>&1 || return 1
