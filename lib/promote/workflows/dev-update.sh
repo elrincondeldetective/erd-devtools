@@ -184,6 +184,7 @@ promote_dev_update_squash() {
     # ==============================================================================
     # Limpieza con prompt (default Sí) + borra local y remoto, solo feature/** y con excepciones.
     # Implementado en common.sh: maybe_delete_source_branch
+    # ✅ Limpieza con prompt (default Sí) + local+remoto (common.sh)
     # ==============================================================================
     if declare -F maybe_delete_source_branch >/dev/null; then
         maybe_delete_source_branch "$source"

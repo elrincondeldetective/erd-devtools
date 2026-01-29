@@ -156,6 +156,8 @@ fi
 
 case "$TARGET_ENV" in
     dev)
+        # ✅ Si `git promote dev` termina en éxito, aterrizamos en dev
+        export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="dev"
         promote_to_dev
         ;;
     _dev-monitor)
