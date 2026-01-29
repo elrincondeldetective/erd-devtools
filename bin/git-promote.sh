@@ -45,6 +45,33 @@ export DEVTOOLS_PROMOTE_FROM_BRANCH="${DEVTOOLS_PROMOTE_FROM_BRANCH:-${__devtool
 unset __devtools_from_branch
 
 # ==============================================================================
+# 1.2 SEGURIDAD DE RAMAS (LANDING TRAP) - [NUEVO]
+# ==============================================================================
+# Esta función se ejecuta automáticamente al salir (EXIT) o al cancelar (Ctrl+C).
+# Garantiza que el usuario siempre regrese a su rama original.
+cleanup_on_exit() {
+    local exit_code=$?
+    # Desactivar trap para evitar bucles infinitos
+    trap - EXIT INT TERM
+    
+    # Solo ejecutamos la restauración si NO estamos en modo monitor interno
+    # (El monitor interno solía correr en subshell/nohup, aquí protegemos el flujo principal)
+    if [[ "${1:-}" != "_dev-monitor" ]]; then
+        # La función git_restore_branch_safely debe estar en lib/core/git-ops.sh
+        if declare -F git_restore_branch_safely >/dev/null; then
+            git_restore_branch_safely "$DEVTOOLS_PROMOTE_FROM_BRANCH"
+        else
+            # Fallback básico por si no se actualizó git-ops.sh
+            echo "⚠️  Finalizando script. Volviendo a $DEVTOOLS_PROMOTE_FROM_BRANCH..."
+            git checkout "$DEVTOOLS_PROMOTE_FROM_BRANCH" >/dev/null 2>&1 || true
+        fi
+    fi
+    exit $exit_code
+}
+# Registramos el trap para Salida Normal, Ctrl+C (INT) y Termination (TERM)
+trap cleanup_on_exit EXIT INT TERM
+
+# ==============================================================================
 # 2. PARSEO DE FLAGS Y SETUP DE IDENTIDAD
 # ==============================================================================
 

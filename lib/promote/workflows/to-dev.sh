@@ -119,50 +119,16 @@ promote_to_dev() {
 
     banner "🤖 PR LISTO (#$pr_number) -> dev"
 
-    # Default: async (libera terminal).
-    # Compat: DEVTOOLS_PROMOTE_DEV_SYNC=1 vuelve al modo bloqueante.
-    local sync="${DEVTOOLS_PROMOTE_DEV_SYNC:-0}"
-    if [[ "$sync" == "1" ]]; then
-        # Función importada de strategies/dev-pr-monitor.sh
-        promote_dev_monitor "$pr_number" "$current_branch"
-        exit $?
-    fi
+    # --------------------------------------------------------------------------
+    # [REFACTOR] Ejecución Síncrona Directa (TAREA 1)
+    # --------------------------------------------------------------------------
+    # Se ha eliminado nohup/background. Ahora el control se pasa directamente
+    # a la estrategia de monitoreo en primer plano. 
+    # La salida (stdout/stderr) es visible inmediatamente.
+    # El retorno de rama (landing) es manejado por el trap en git-promote.sh.
 
-    # Lanzar monitor en background SIN tocar tu working tree.
-    local promote_cmd
-    promote_cmd="$(__resolve_promote_script)"
-
-    local repo_name log_file golden_file
-    repo_name="$(basename "${REPO_ROOT:-.}")"
-    log_file="${TMPDIR:-/tmp}/devtools-promote-dev-${repo_name}-pr${pr_number}.log"
-    golden_file="$(resolve_golden_sha_file 2>/dev/null || echo ".last_golden_sha")"
-
-    if command -v nohup >/dev/null 2>&1; then
-        nohup "$promote_cmd" _dev-monitor "$pr_number" "$current_branch" >"$log_file" 2>&1 &
-    else
-        ( "$promote_cmd" _dev-monitor "$pr_number" "$current_branch" >"$log_file" 2>&1 ) &
-    fi
-
-    local pr_url
-    pr_url="$(GH_PAGER=cat gh pr view "$pr_number" --json url --jq '.url // ""' 2>/dev/null || echo "")"
-
-    banner "✅ PR CREADO (pendiente de aprobación)"
-    [[ -n "${pr_url:-}" ]] && echo "🔗 PR: $pr_url"
-    echo
-
-    banner "✅ DEV EN PROCESO (monitor en background)"
-    echo "📄 Log del monitor: $log_file"
-    echo "🔒 GOLDEN_SHA se escribirá en: $golden_file"
-    echo
-
-    log_info "📌 Issues abiertos (top 10):"
-    if command -v gh >/dev/null 2>&1; then
-        GH_PAGER=cat gh issue list --state open --limit 10 2>/dev/null || log_warn "No pude listar issues (¿gh auth?)."
-    else
-        log_warn "No se encontró 'gh'. No puedo listar issues."
-    fi
-
-    echo
-    echo "👉 Cuando el monitor termine: git promote staging"
-    exit 0
+    promote_dev_monitor "$pr_number" "$current_branch"
+    
+    # Propagamos el código de salida del monitor
+    exit $?
 }

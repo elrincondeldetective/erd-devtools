@@ -237,3 +237,50 @@ print_git_identity_state() {
         echo "   user.email: $email"
     fi
 }
+
+# ==============================================================================
+# 6. SEGURIDAD DE RAMAS (BRANCH SAFETY / LANDING)
+# ==============================================================================
+
+# Restaura la rama original al finalizar el script.
+# Si la rama fue borrada (ej. por squash merge), la recrea desde el punto actual (o dev/main según aplique)
+# y notifica al usuario.
+git_restore_branch_safely() {
+    local target_branch="$1"
+    
+    # Si no hay target o es detached, no hacemos nada crítico
+    if [[ -z "$target_branch" || "$target_branch" == "(detached)" ]]; then
+        return 0
+    fi
+
+    local current
+    current="$(git branch --show-current 2>/dev/null || echo "")"
+
+    # Si ya estamos ahí, listo.
+    if [[ "$current" == "$target_branch" ]]; then
+        return 0
+    fi
+
+    echo
+    echo "🛬 Finalizando flujo: Volviendo a '$target_branch'..."
+
+    # 1. Intentar checkout normal
+    if git checkout "$target_branch" >/dev/null 2>&1; then
+        echo "✅ Regreso exitoso a $target_branch."
+        return 0
+    fi
+
+    # 2. Si falla, asumimos que fue borrada. Intentamos recrearla.
+    # NOTA: Al ser una restauración de emergencia, la creamos apuntando al HEAD actual 
+    # o idealmente al origen si existe, pero el usuario pidió "recrearla".
+    echo "⚠️  La rama '$target_branch' no existe (¿fue borrada durante el merge?)."
+    echo "🔄 Recreando '$target_branch' para mantener contexto..."
+
+    if git checkout -b "$target_branch" >/dev/null 2>&1; then
+        echo "✅ Rama recreada exitosamente. Estás en '$target_branch'."
+        echo "📝 NOTA: Esta es una copia nueva. Verifica tu estado con 'git status'."
+    else
+        echo "❌ FALLO CRÍTICO: No pude volver ni recrear '$target_branch'." >&2
+        echo "📍 Te has quedado en: ${current:-detached HEAD}" >&2
+    fi
+}

@@ -109,6 +109,69 @@ __watch_workflow_success_on_sha_or_die() {
 }
 
 # ------------------------------------------------------------------------------
+# Helpers: Descubrimiento y Visualización (TAREA 2)
+# ------------------------------------------------------------------------------
+
+# Retorna una lista de números de PR abiertos hacia una base, separados por espacio
+gh_discover_prs_to_base() {
+    local base_branch="$1"
+    GH_PAGER=cat gh pr list --base "$base_branch" --state open \
+        --json number --jq '.[].number' | tr '\n' ' '
+}
+
+# Obtiene metadatos ricos de un PR en formato JSON plano (para parsing fácil con jq)
+gh_get_pr_rich_details() {
+    local pr_number="$1"
+    # statusCheckRollup nos da el estado general del CI (SUCCESS, FAILURE, PENDING)
+    GH_PAGER=cat gh pr view "$pr_number" \
+        --json number,title,url,headRefName,reviewDecision,mergeable,statusCheckRollup \
+        2>/dev/null || echo "{}"
+}
+
+# Obtiene el detalle de los Checks (Jobs) individuales para mostrar al usuario
+gh_get_pr_checks_summary() {
+    local pr_number="$1"
+    GH_PAGER=cat gh pr checks "$pr_number" || echo "No checks found."
+}
+
+# Renderiza una "Tarjeta" visual del PR en la terminal
+ui_render_pr_card() {
+    local pr_json="$1"
+    
+    # Parseo seguro con jq (asumiendo que está disponible, si no, fallback simple)
+    local num title url head decision mergeable ci_state
+    num="$(echo "$pr_json" | jq -r '.number // "0"')"
+    title="$(echo "$pr_json" | jq -r '.title // "Sin título"')"
+    url="$(echo "$pr_json" | jq -r '.url // ""')"
+    head="$(echo "$pr_json" | jq -r '.headRefName // "?"')"
+    decision="$(echo "$pr_json" | jq -r '.reviewDecision // "NONE"')"
+    mergeable="$(echo "$pr_json" | jq -r '.mergeable // "UNKNOWN"')"
+    # Extraer estado general del CI
+    ci_state="$(echo "$pr_json" | jq -r '.statusCheckRollup.state // "NO_CI"')"
+
+    # Iconografía
+    local icon_ci="⚪"
+    [[ "$ci_state" == "SUCCESS" ]] && icon_ci="✅"
+    [[ "$ci_state" == "FAILURE" ]] && icon_ci="❌"
+    [[ "$ci_state" == "PENDING" ]] && icon_ci="⏳"
+
+    local icon_review="🛡️"
+    [[ "$decision" == "APPROVED" ]] && icon_review="👍"
+    [[ "$decision" == "CHANGES_REQUESTED" ]] && icon_review="🚫"
+
+    local icon_merge="🧩"
+    [[ "$mergeable" == "MERGEABLE" ]] && icon_merge="⚡"
+    [[ "$mergeable" == "CONFLICTING" ]] && icon_merge="💥"
+
+    echo "────────────────────────────────────────────────────────────────────────────────"
+    echo "📄 PR #$num: $title"
+    echo "   $icon_review Review: $decision  |  $icon_merge Merge: $mergeable  |  $icon_ci CI: $ci_state"
+    echo "   🔗 $url"
+    echo "   🌿 Rama: $head"
+    echo "────────────────────────────────────────────────────────────────────────────────"
+}
+
+# ------------------------------------------------------------------------------
 # Helpers: Pull Request (Aprobación y Release Please)
 # ------------------------------------------------------------------------------
 
