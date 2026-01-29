@@ -114,41 +114,70 @@ promote_dev_update_squash() {
         die "Resuelve conflictos manualmente y reintenta."
     fi
 
+    # NOTA: Aunque no haya cambios (diff --quiet), igual queremos borrar la rama feature
+    # si ya fue integrada previamente o si fue vacía.
+    local changes_applied=0
     if git diff --cached --quiet; then
         log_warn "No hay cambios para aplicar (no-op). Asegurando push..."
         git push origin "$canonical" >/dev/null 2>&1 || true
         log_success "✅ OK. Te quedas en: ${canonical}"
-        return 0
-    fi
+    else
+        changes_applied=1
+        local title body
+        title="chore(dev-update): squash ${source}"
+        body="$(
+            git log --pretty=format:'- %s (%h)' "${before}..${source}" 2>/dev/null | head -n 60 || true
+        )"
+        [[ -n "${body:-}" ]] || body="(no commit list available)"
 
-    local title body
-    title="chore(dev-update): squash ${source}"
-    body="$(
-        git log --pretty=format:'- %s (%h)' "${before}..${source}" 2>/dev/null | head -n 60 || true
-    )"
-    [[ -n "${body:-}" ]] || body="(no commit list available)"
+        git commit -m "$title" -m "$body"
 
-    git commit -m "$title" -m "$body"
+        log_info "📡 Push a origin/${canonical}..."
+        if ! git push origin "$canonical"; then
+            # Retry seguro (sin force): refrescamos destino y re-squash
+            log_warn "Push rechazado. Reintentando con destino actualizado..."
+            git fetch origin "$canonical" >/dev/null 2>&1 || true
+            git reset --hard "origin/${canonical}" >/dev/null 2>&1 || true
 
-    log_info "📡 Push a origin/${canonical}..."
-    if ! git push origin "$canonical"; then
-        # Retry seguro (sin force): refrescamos destino y re-squash
-        log_warn "Push rechazado. Reintentando con destino actualizado..."
-        git fetch origin "$canonical" >/dev/null 2>&1 || true
-        git reset --hard "origin/${canonical}" >/dev/null 2>&1 || true
-
-        if ! git merge --squash -X theirs "$source"; then
-            log_error "Conflictos en reintento."
-            git merge --abort >/dev/null 2>&1 || true
-            die "Reintento falló. Resuelve manualmente."
+            if ! git merge --squash -X theirs "$source"; then
+                log_error "Conflictos en reintento."
+                git merge --abort >/dev/null 2>&1 || true
+                die "Reintento falló. Resuelve manualmente."
+            fi
+            if ! git diff --cached --quiet; then
+                git commit -m "$title" -m "$body"
+            fi
+            git push origin "$canonical" || die "No pude pushear ${canonical} después del reintento."
         fi
-        if ! git diff --cached --quiet; then
-            git commit -m "$title" -m "$body"
-        fi
-        git push origin "$canonical" || die "No pude pushear ${canonical} después del reintento."
+        log_success "✅ ${canonical} actualizado y pusheado."
     fi
-
-    log_success "✅ ${canonical} actualizado y pusheado."
+    
     log_success "✅ Te quedas en: ${canonical}"
+
+    # ==============================================================================
+    # NUEVO: Limpieza automática de la rama feature (Borrado seguro)
+    # ==============================================================================
+    local protected_branches=("main" "dev" "staging" "feature/dev-update")
+    local is_protected=0
+
+    for branch in "${protected_branches[@]}"; do
+        if [[ "$source" == "$branch" ]]; then
+            is_protected=1
+            break
+        fi
+    done
+
+    if [[ "$is_protected" == "0" ]]; then
+        log_info "🧹 Limpiando rama fuente ya integrada: ${source}"
+        # Usamos -D (force) porque el squash no deja rastro de merge en la historia de la rama source
+        if git branch -D "$source" >/dev/null 2>&1; then
+            log_success "🗑️  Rama '${source}' eliminada localmente."
+        else
+            log_warn "⚠️  No se pudo borrar '${source}' automáticamente (quizás no existe o permisos)."
+        fi
+    else
+        log_info "🛡️  La rama fuente '${source}' es protegida. Se mantiene intacta."
+    fi
+
     return 0
 }
