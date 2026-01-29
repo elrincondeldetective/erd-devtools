@@ -12,9 +12,9 @@
 # ------------------------------------------------------------------------------
 # Dynamic Imports (Refactorización Modular)
 # ------------------------------------------------------------------------------
-# Detectamos el directorio actual (workflows) y subimos un nivel para encontrar
-# 'helpers' y 'strategies' dentro de /lib/promote/
-_CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Detectamos el directorio actual de forma robusta (Bash y Zsh compatible)
+# ${BASH_SOURCE[0]:-$0} usa BASH_SOURCE si existe, o cae en $0 (que Zsh usa para el path al hacer source)
+_CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 _PROMOTE_LIB_ROOT="$(dirname "$_CURRENT_DIR")"
 
 # 1. Cargar Helpers de GitHub/Git
@@ -22,6 +22,7 @@ if [[ -f "${_PROMOTE_LIB_ROOT}/helpers/gh-interactions.sh" ]]; then
     source "${_PROMOTE_LIB_ROOT}/helpers/gh-interactions.sh"
 else
     echo "❌ Error: No se encontró helpers/gh-interactions.sh" >&2
+    echo "   Buscado en: ${_PROMOTE_LIB_ROOT}/helpers/gh-interactions.sh" >&2
     exit 1
 fi
 
