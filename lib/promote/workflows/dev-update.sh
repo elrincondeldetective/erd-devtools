@@ -171,7 +171,7 @@ promote_dev_update_squash() {
 
     if [[ "$is_protected" == "0" ]]; then
         log_info "🧹 Limpiando rama fuente ya integrada: ${source}"
-        # Usamos -D (force) porque el squash no deja rastro de merge en la historia de la rama source
+        # Usamos -D (force) porque el squash no deja rastro de merge en la historia de la rama source.
         if git branch -D "$source" >/dev/null 2>&1; then
             log_success "🗑️  Rama '${source}' eliminada localmente."
         else
