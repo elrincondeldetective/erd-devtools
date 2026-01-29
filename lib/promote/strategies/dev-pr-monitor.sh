@@ -17,6 +17,37 @@ elif [[ -f "lib/ui/prompts.sh" ]]; then
     source "lib/ui/prompts.sh"
 fi
 
+# ==============================================================================
+# HELPER LOCAL: STREAMING DE LOGS (La "TV" de GitHub)
+# ==============================================================================
+stream_branch_activity() {
+    local branch="$1"
+    local context="$2"
+    
+    echo
+    log_info "📺 [LIVE] Buscando actividad en rama '$branch' ($context)..."
+    echo "   (Esperando 5s para que GitHub despierte...)"
+    sleep 5
+
+    # Buscamos el run más reciente en esta rama que esté en progreso o queued
+    local run_id
+    run_id="$(GH_PAGER=cat gh run list --branch "$branch" --limit 1 --json databaseId,status --jq '.[0] | select(.status != "completed") | .databaseId' 2>/dev/null)"
+
+    if [[ -n "$run_id" ]]; then
+        log_info "🎥 Conectando a logs en vivo (Run ID: $run_id)..."
+        # --exit-status hace que el comando falle si el CI falla, lo cual es lo que queremos saber
+        if GH_PAGER=cat gh run watch "$run_id" --exit-status; then
+            log_success "✅ CI completado exitosamente."
+        else
+            log_error "❌ El CI falló. Revisa los logs arriba."
+            # No matamos el script aquí, dejamos que el usuario decida o que el chequeo final falle
+        fi
+    else
+        log_warn "ℹ️  No se detectaron workflows activos inmediatos en '$branch'."
+    fi
+    echo
+}
+
 promote_dev_monitor() {
     local input_pr="${1:-}"      # PR sugerido por to-dev.sh (si existe)
     local input_branch="${2:-}"  # Rama origen
@@ -106,9 +137,12 @@ promote_dev_monitor() {
                     # 2. Habilitar Auto-Merge
                     log_info "🤖 Configurando Auto-Merge (Squash + Delete Branch)..."
                     if GH_PAGER=cat gh pr merge "$pr_id" --auto --squash --delete-branch; then
-                        log_info "⏳ Esperando que GitHub complete el merge (checks + merge)..."
+                        log_info "⏳ Esperando que GitHub complete el merge..."
                         
-                        # 3. Monitorear hasta que el merge ocurra
+                        # STREAMING: Ver logs mientras se mergea
+                        stream_branch_activity "dev" "Merge Check"
+                        
+                        # 3. Monitorear hasta que el merge ocurra (doble check)
                         local m_sha
                         m_sha="$(wait_for_pr_merge_and_get_sha "$pr_id")"
                         log_success "✅ Merge completado exitosamente: ${m_sha:0:7}"
@@ -139,8 +173,12 @@ promote_dev_monitor() {
                             something_merged=1 
                             
                             # Limpieza: Cerramos el PR ya que hicimos bypass
-                            log_info "🧹 Cerrando el PR #$pr_id..."
-                            gh pr close "$pr_id" --delete-branch || true
+                            # [FIX] Silenciamos output de error por si ya estaba cerrado
+                            log_info "🧹 Limpiando PR #$pr_id..."
+                            gh pr close "$pr_id" --delete-branch >/dev/null 2>&1 || true
+                            
+                            # STREAMING: Ver logs inmediatamente después del force push
+                            stream_branch_activity "dev" "Post-Force-Push Build"
                             
                             break
                         else
@@ -188,18 +226,38 @@ promote_dev_monitor() {
     local post_rp=0
 
     if repo_has_workflow_file "release-please"; then
-        log_info "🤖 Verificando si 'release-please' genera un PR de release..."
+        log_info "🤖 Escaneando actividad de 'release-please'..."
+
+        # Intentamos ver si el workflow arrancó para mostrar logs
+        local rp_wf_id
+        rp_wf_id="$(GH_PAGER=cat gh run list --workflow release-please.yml --limit 1 --json databaseId,status --jq '.[0] | select(.status != "completed") | .databaseId' 2>/dev/null)"
+        
+        if [[ -n "$rp_wf_id" ]]; then
+             log_info "📺 Viendo logs de Release Please (ID: $rp_wf_id)..."
+             GH_PAGER=cat gh run watch "$rp_wf_id"
+        fi
+
+        # Buscar el PR resultante
         rp_pr="$(wait_for_release_please_pr_number_optional)"
         
         if [[ "${rp_pr:-}" =~ ^[0-9]+$ ]]; then
             post_rp=1
             banner "🤖 PR DE RELEASE DETECTADO: #$rp_pr"
             
+            # Verificamos estado del PR del bot antes de preguntar
+            local rp_status
+            rp_status="$(gh_get_pr_rich_details "$rp_pr")"
+            ui_render_pr_card "$rp_status"
+            
             local bot_choice
             bot_choice="$(ui_read_option "   ¿Auto-mergear PR del bot #$rp_pr ahora? [Y/n] > ")"
             if [[ "$bot_choice" =~ ^[Yy] || -z "$bot_choice" ]]; then
                 log_info "🤖 Auto-mergeando bot (release-please)..."
                 GH_PAGER=cat gh pr merge "$rp_pr" --auto --squash
+                
+                # Streaming del merge del bot
+                stream_branch_activity "dev" "Release Please Merge"
+                
                 wait_for_pr_merge_and_get_sha "$rp_pr" >/dev/null
                 log_success "✅ Bot mergeado."
             else
@@ -211,12 +269,11 @@ promote_dev_monitor() {
     fi
 
     # B) Captura del GOLDEN SHA (Estado final de Dev)
-    # Importante: Si hicimos force push, origin/dev ya es nuestro HEAD actual.
     local dev_sha
     dev_sha="$(__remote_head_sha "dev" "origin")"
     
     if [[ -z "${dev_sha:-}" ]]; then
-        # Fallback de seguridad si __remote_head_sha falla por latencia
+        # Fallback de seguridad
         git fetch origin dev >/dev/null 2>&1
         dev_sha="$(git rev-parse origin/dev)"
     fi
@@ -228,6 +285,7 @@ promote_dev_monitor() {
 
     # C) Verificar Build Final en Dev (Critical Safety Check)
     if repo_has_workflow_file "build-push"; then
+            # El streaming ya debió mostrarnos los logs, pero esto asegura éxito rotundo
             wait_for_workflow_success_on_ref_or_sha_or_die "build-push.yaml" "$dev_sha" "dev" "Build Final (Dev)"
     fi
 
