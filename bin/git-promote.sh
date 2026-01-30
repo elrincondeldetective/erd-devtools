@@ -37,19 +37,30 @@ source "${PROMOTE_LIB}/gitops-integration.sh"
 source "${PROMOTE_LIB}/workflows.sh"
 
 # ==============================================================================
+# 0.1 PARSEO TEMPRANO DE FLAGS (antes de cualquier guardia)
+# ==============================================================================
+DEVTOOLS_AUTO_APPROVE=false
+while (( $# )); do
+  case "${1:-}" in
+    -y|--yes)
+      DEVTOOLS_AUTO_APPROVE=true
+      export DEVTOOLS_ASSUME_YES=1
+      shift
+      ;;
+    *) break ;;
+  esac
+done
+
+TARGET_ENV="${1:-}"
+
+# ==============================================================================
 # 0. GUARDIA: TOOLSET CANÓNICO (evita "se arregla y vuelve" por rama del submódulo)
 # ==============================================================================
 DEVTOOLS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-DEVTOOLS_CANONICAL_REFS=("${DEVTOOLS_CANONICAL_REFS[@]:-dev feature/dev-update}")
+if [[ ${#DEVTOOLS_CANONICAL_REFS[@]:-0} -eq 0 ]]; then
+  DEVTOOLS_CANONICAL_REFS=(dev feature/dev-update)
+fi
 DEVTOOLS_BYPASS_CANONICAL_GUARD="${DEVTOOLS_BYPASS_CANONICAL_GUARD:-0}"
-
-# Detectar -y/--yes temprano para el guard (porque el parseo formal ocurre después)
-__EARLY_ASSUME_YES="${DEVTOOLS_ASSUME_YES:-0}"
-for __a in "$@"; do
-  case "$__a" in
-    -y|--yes) __EARLY_ASSUME_YES=1 ;;
-  esac
-done
 
 if [[ "$DEVTOOLS_BYPASS_CANONICAL_GUARD" != "1" ]] && git -C "$DEVTOOLS_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   tool_branch="$(git -C "$DEVTOOLS_ROOT" branch --show-current 2>/dev/null || echo "")"
@@ -82,7 +93,7 @@ if [[ "$DEVTOOLS_BYPASS_CANONICAL_GUARD" != "1" ]] && git -C "$DEVTOOLS_ROOT" re
     fi
 
     # En --yes asumimos switch automático al primer canónico
-    if [[ "$__EARLY_ASSUME_YES" == "1" ]] || ask_yes_no "¿Cambiar el toolset a '${DEVTOOLS_CANONICAL_REFS[0]}' y re-ejecutar?"; then
+    if [[ "${DEVTOOLS_ASSUME_YES:-0}" == "1" ]] || ask_yes_no "¿Cambiar el toolset a '${DEVTOOLS_CANONICAL_REFS[0]}' y re-ejecutar?"; then
       git -C "$DEVTOOLS_ROOT" fetch origin --prune >/dev/null 2>&1 || true
       git -C "$DEVTOOLS_ROOT" checkout "${DEVTOOLS_CANONICAL_REFS[0]}" >/dev/null 2>&1 || die "No pude cambiar a rama canónica."
       exec "$DEVTOOLS_ROOT/bin/git-promote.sh" "$@"
@@ -146,13 +157,8 @@ trap 'cleanup_on_exit' EXIT INT TERM
 # 2. PARSEO DE FLAGS Y SETUP DE IDENTIDAD
 # ==============================================================================
 
-# Soporte para flag de auto-confirmación (útil para CI/Automación)
-DEVTOOLS_AUTO_APPROVE=false
-if [[ "${1:-}" == "-y" || "${1:-}" == "--yes" ]]; then
-    export DEVTOOLS_AUTO_APPROVE=true
-    export DEVTOOLS_ASSUME_YES=1
-    shift # Elimina el flag de los argumentos para no romper el router
-fi
+# Nota: El parseo de -y/--yes ya se realizó en la sección 0.1 y se hizo shift.
+# Mantenemos este bloque por si hay lógica adicional o para setup de SSH.
 
 # Si no estamos en modo simple, cargamos las llaves SSH antes de empezar
 # EXCEPCIÓN: `_dev-monitor` debe ser no-interactivo (puede correr con nohup/sin TTY).
