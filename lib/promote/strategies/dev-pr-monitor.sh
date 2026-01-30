@@ -48,6 +48,33 @@ stream_branch_activity() {
     echo
 }
 
+__strict_pr_ok() {
+    local pr_json="$1"
+    local decision mergeable ci_state
+    decision="$(echo "$pr_json" | jq -r '.reviewDecision // "NONE"')"
+    mergeable="$(echo "$pr_json" | jq -r '.mergeable // "UNKNOWN"')"
+    ci_state="$(echo "$pr_json" | jq -r 'if (.statusCheckRollup | type)=="object" then (.statusCheckRollup.state // "NO_CI") else "NO_CI" end')"
+
+    [[ "$decision" == "APPROVED" ]] || return 1
+    [[ "$mergeable" == "MERGEABLE" ]] || return 1
+    [[ "$ci_state" == "SUCCESS" ]] || return 1
+    return 0
+}
+
+__strict_gate_check_or_fail() {
+    local prs=("$@")
+    [[ "${DEVTOOLS_BYPASS_STRICT:-0}" == "1" ]] && return 0
+    local bad=0
+    for pr_id in "${prs[@]}"; do
+        local j; j="$(gh_get_pr_rich_details "$pr_id")"
+        if ! __strict_pr_ok "$j"; then
+            bad=1
+        fi
+    done
+    [[ "$bad" == "0" ]] || return 1
+    return 0
+}
+
 promote_dev_monitor() {
     local input_pr="${1:-}"      # PR sugerido por to-dev.sh (si existe)
     local input_branch="${2:-}"  # Rama origen
@@ -70,14 +97,13 @@ promote_dev_monitor() {
             pr_candidates+=("$p")
         done
     fi
+    # Siempre: mostrar actividad en dev (builds en curso) si hay TTY
+    stream_branch_activity "dev" "Dev Health"
 
-    # Validación de vacío
     if [[ ${#pr_candidates[@]} -eq 0 ]]; then
-        log_warn "🤷 No se encontraron Pull Requests relevantes para 'dev'."
-        echo "   (Nada que aprobar o monitorear)"
+        log_info "✅ Sin PRs abiertos hacia dev."
         return 0
     fi
-
     # --------------------------------------------------------------------------
     # 2. Fase de Visualización (Data Gathering & Rendering)
     # --------------------------------------------------------------------------
@@ -213,6 +239,13 @@ promote_dev_monitor() {
         done
     done
 
+    # Gate estricto final (si quedan PRs no OK → exit!=0), salvo bypass
+    if ! __strict_gate_check_or_fail "${pr_candidates[@]}"; then
+        log_error "🚨 DEV NO OK: Hay PR(s) abiertos hacia dev sin APPROVAL/CI SUCCESS/MERGEABLE."
+        log_warn "Usa export DEVTOOLS_BYPASS_STRICT=1 para bypass de emergencia."
+        return 1
+    fi
+
     # --------------------------------------------------------------------------
     # 4. POST-PROCESAMIENTO (BOT & GOLDEN SHA)
     # --------------------------------------------------------------------------
@@ -236,8 +269,8 @@ promote_dev_monitor() {
         rp_wf_id="$(GH_PAGER=cat gh run list --workflow release-please.yml --limit 1 --json databaseId,status --jq '.[0] | select(.status != "completed") | .databaseId' 2>/dev/null)"
         
         if [[ -n "$rp_wf_id" ]]; then
-             log_info "📺 Viendo logs de Release Please (ID: $rp_wf_id)..."
-             GH_PAGER=cat gh run watch "$rp_wf_id"
+                log_info "📺 Viendo logs de Release Please (ID: $rp_wf_id)..."
+                GH_PAGER=cat gh run watch "$rp_wf_id"
         fi
 
         # Buscar el PR resultante

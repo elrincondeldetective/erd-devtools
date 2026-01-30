@@ -85,51 +85,12 @@ promote_to_dev() {
         promote_to_dev_direct
         exit $?
     fi
-
-    # --------------------------------------------------------------------------
-    # ESTRATEGIA 2: Modo PR Standard (feature -> PR -> dev)
-    # --------------------------------------------------------------------------
-    local current_branch
-    current_branch="$(git branch --show-current)"
-
-    if [[ "$current_branch" == "dev" || "$current_branch" == "staging" || "$current_branch" == "main" ]]; then
-        log_error "Estás en '$current_branch'. Debes estar en una feature branch."
-        exit 1
-    fi
-
+    # Nuevo contrato: git promote dev = monitor/admin (NO crea PR)
     if ! command -v gh >/dev/null 2>&1; then
-        log_error "Se requiere 'gh' para el flujo PR-based (git promote dev crea el PR)."
+        log_error "Se requiere 'gh' para monitorear estado de DEV (policía estricto)."
         exit 1
     fi
 
-    echo "🔍 Buscando PR existente (read-only) para '$current_branch' -> dev..."
-    local pr_number
-    pr_number="$(GH_PAGER=cat gh pr list --head "$current_branch" --base dev --state open --json number --jq '.[0].number' 2>/dev/null || true)"
-
-    if [[ -z "${pr_number:-}" ]]; then
-        log_warn "No existe PR abierto para '$current_branch' -> dev. (Creación deshabilitada)"
-        log_info "Crea el PR con: git pr   (desde esta rama) y re-ejecuta: git promote dev"
-        promote_dev_monitor "" "$current_branch"   # discovery hacia dev
-        exit $?
-    fi
-
-    if [[ -z "${pr_number:-}" ]]; then
-        log_error "No pude resolver el PR para '$current_branch' -> dev."
-        exit 1
-    fi
-
-    banner "🤖 PR LISTO (#$pr_number) -> dev"
-
-    # --------------------------------------------------------------------------
-    # [REFACTOR] Ejecución Síncrona Directa (TAREA 1)
-    # --------------------------------------------------------------------------
-    # Se ha eliminado nohup/background. Ahora el control se pasa directamente
-    # a la estrategia de monitoreo en primer plano. 
-    # La salida (stdout/stderr) es visible inmediatamente.
-    # El retorno de rama (landing) es manejado por el trap en git-promote.sh.
-
-    promote_dev_monitor "$pr_number" "$current_branch"
-    
-    # Propagamos el código de salida del monitor
+    promote_dev_monitor "" ""
     exit $?
 }

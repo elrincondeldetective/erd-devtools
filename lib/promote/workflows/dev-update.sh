@@ -157,28 +157,12 @@ promote_dev_update_squash() {
     export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="${canonical}"
 
     # ==============================================================================
-    # NUEVO: Limpieza automática de la rama feature (Borrado seguro).
+    # Limpieza: preguntar (default Sí) y borrar local+remoto usando helper central.
     # ==============================================================================
-    local protected_branches=("main" "dev" "staging" "feature/dev-update")
-    local is_protected=0
-
-    for branch in "${protected_branches[@]}"; do
-        if [[ "$source" == "$branch" ]]; then
-            is_protected=1
-            break
-        fi
-    done
-
-    if [[ "$is_protected" == "0" ]]; then
-        log_info "🧹 Limpiando rama fuente ya integrada: ${source}"
-        # Usamos -D (force) porque el squash no deja rastro de merge en la historia de la rama source.
-        if git branch -D "$source" >/dev/null 2>&1; then
-            log_success "🗑️  Rama '${source}' eliminada localmente."
-        else
-            log_warn "⚠️  No se pudo borrar '${source}' automáticamente (quizás no existe o permisos)."
-        fi
+    if declare -F maybe_delete_source_branch >/dev/null; then
+        maybe_delete_source_branch "$source"
     else
-        log_info "🛡️  La rama fuente '${source}' es protegida. Se mantiene intacta."
+        log_warn "maybe_delete_source_branch no está disponible. No se borra rama fuente."
     fi
 
     # ==============================================================================

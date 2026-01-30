@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Features
+- **git-promote(dev):** modo monitor “policía estricto” para PRs hacia `dev` (CI+review+mergeable) con bypass `DEVTOOLS_BYPASS_STRICT=1`.
+- **git-promote:** política de aterrizaje por comando (override): `dev` cae en `dev` al salir; `feature/dev-update` cae en `feature/dev-update` en éxito.
+
+### Bug Fixes
+- **git-promote(feature/dev-update):** el trap ya no pisa el aterrizaje del workflow (landing override en éxito).
+
 ## [3.0.0](https://github.com/elrincondeldetective/erd-devtools/compare/erd-devtools-v2.0.0...erd-devtools-v3.0.0) (2026-01-27)
 
 

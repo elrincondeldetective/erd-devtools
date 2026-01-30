@@ -55,7 +55,9 @@ export DEVTOOLS_PROMOTE_FROM_SHA="${DEVTOOLS_PROMOTE_FROM_SHA:-$(git rev-parse H
 # Esta función se ejecuta automáticamente al salir (EXIT) o al cancelar (Ctrl+C).
 # Garantiza que el usuario siempre regrese a su rama original.
 cleanup_on_exit() {
+    local reason="${1:-EXIT}"
     local exit_code=$?
+
     # Desactivar trap para evitar bucles infinitos
     trap - EXIT INT TERM
     # ✅ Si un workflow definió landing en éxito, obedecerlo
@@ -95,7 +97,27 @@ cleanup_on_exit() {
     if [[ "${TARGET_ENV:-}" != "_dev-monitor" ]]; then
         # La función git_restore_branch_safely debe estar en lib/core/git-ops.sh
         if declare -F git_restore_branch_safely >/dev/null; then
-            git_restore_branch_safely "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}"
+            # INT/TERM: siempre restaurar a rama inicial (seguro)
+            if [[ "$reason" != "EXIT" ]]; then
+                git_restore_branch_safely "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}"
+                exit "$exit_code"
+            fi
+
+            # EXIT: si hay landing “siempre”, obedecerlo aunque exit!=0 (modo policía)
+            if [[ -n "${DEVTOOLS_LAND_ON_EXIT_BRANCH:-}" ]]; then
+                git checkout "${DEVTOOLS_LAND_ON_EXIT_BRANCH}" >/dev/null 2>&1 || true
+                exit "$exit_code"
+            fi
+
+            # EXIT éxito: landing por success override si existe; si no, quedarse donde esté
+            if [[ "$exit_code" -eq 0 ]]; then
+                if [[ -n "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH:-}" ]]; then
+                    git checkout "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}" >/dev/null 2>&1 || true
+                fi
+            else
+                # EXIT fallo real: restaurar a rama inicial
+                git_restore_branch_safely "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}"
+            fi
         else
             # Fallback básico por si no se actualizó git-ops.sh
             echo "⚠️  Finalizando script. Volviendo a ${DEVTOOLS_PROMOTE_FROM_BRANCH:-}..."
@@ -104,8 +126,10 @@ cleanup_on_exit() {
     fi
     exit $exit_code
 }
-# Registramos el trap para Salida Normal, Ctrl+C (INT) y Termination (TERM)
-trap cleanup_on_exit EXIT INT TERM
+# Registramos el trap con “reason” explícito
+trap 'cleanup_on_exit EXIT' EXIT
+trap 'cleanup_on_exit INT'  INT
+trap 'cleanup_on_exit TERM' TERM
 
 # ==============================================================================
 # 2. PARSEO DE FLAGS Y SETUP DE IDENTIDAD
@@ -130,8 +154,19 @@ fi
 
 TARGET_ENV="${1:-}"
 
+# Landing policy por comando
+if [[ "$TARGET_ENV" == "dev" ]]; then
+    # Policía: siempre caer en dev aunque exit!=0
+    export DEVTOOLS_LAND_ON_EXIT_BRANCH="dev"
+fi
+
 # --- Guardias de Seguridad y Confirmación ---
 if [[ -n "$TARGET_ENV" && "$TARGET_ENV" != "_dev-monitor" ]]; then
+
+    # Dev monitor (admin) no requiere repo limpio (solo observación), salvo modo directo
+    if [[ "$TARGET_ENV" == "dev" && "${DEVTOOLS_PROMOTE_DEV_DIRECT:-0}" != "1" ]]; then
+        :
+    else
     
     # 1. Validar que el working tree esté limpio antes de cualquier operación destructiva
     if declare -F ensure_clean_git_or_die >/dev/null; then
@@ -139,9 +174,13 @@ if [[ -n "$TARGET_ENV" && "$TARGET_ENV" != "_dev-monitor" ]]; then
     else
         ensure_clean_git # Fallback a git-ops.sh si checks.sh no está cargado
     fi
+    fi
 
     # 2. Confirmación Obligatoria (Anti-errores)
-    if [[ "$DEVTOOLS_AUTO_APPROVE" == "false" ]]; then
+    # Dev monitor (admin) NO es destructivo por defecto → no mostrar warning global
+    if [[ "$TARGET_ENV" == "dev" && "${DEVTOOLS_PROMOTE_DEV_DIRECT:-0}" != "1" ]]; then
+        :
+    elif [[ "$DEVTOOLS_AUTO_APPROVE" == "false" ]]; then
         echo
         log_warn "⚠️  OPERACIÓN DE PROMOCIÓN APLASTANTE (Destructive Promotion)"
         echo "Contenido de la rama destino '$TARGET_ENV' será reemplazado por '${DEVTOOLS_PROMOTE_FROM_BRANCH:-}'."
@@ -174,11 +213,13 @@ case "$TARGET_ENV" in
         ;;
     dev-update|feature/dev-update)
         # Permite pasar una rama opcional como segundo argumento
+        export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="feature/dev-update"
         promote_dev_update_squash "${2:-}"
         ;;
     feature/*)
         # UX: permitir "git promote feature/mi-rama" para aplastar esa rama
         # dentro de feature/dev-update (y pushear el resultado al remoto).
+        export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="feature/dev-update"
         promote_dev_update_squash "$TARGET_ENV"
         ;;
     hotfix)
@@ -191,7 +232,9 @@ case "$TARGET_ENV" in
         echo "Uso: git promote [-y | --yes] [dev | staging | prod | sync | feature/dev-update | hotfix | hotfix-finish]"
         echo
         echo "Comandos disponibles:"
-        echo "  dev                 : Promueve feature actual -> dev (Aplastante)"
+        echo "  dev                 : Monitor estricto (admin) del estado de 'dev' (PRs/CI). No crea PR."
+        echo "                        Bypass: DEVTOOLS_BYPASS_STRICT=1 (emergencia)."
+        echo "                        Modo directo (destructivo): DEVTOOLS_PROMOTE_DEV_DIRECT=1"
         echo "  staging             : Promueve dev -> staging (gestiona Tags/RC)"
         echo "  prod                : Promueve staging -> main (gestiona Release Tags)"
         echo "  sync                : Sincronización inteligente (Smart Sync)"
