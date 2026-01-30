@@ -105,7 +105,7 @@ promote_dev_monitor() {
         return 0
     fi
     # --------------------------------------------------------------------------
-    # 2. Fase de Visualización (Data Gathering & Rendering)
+    # 2. Fase de Visualización (Data Gathering & Rendering).
     # --------------------------------------------------------------------------
     echo
     log_info "📋 PRs Encontrados (${#pr_candidates[@]}):"
