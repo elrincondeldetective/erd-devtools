@@ -40,8 +40,16 @@ source "${PROMOTE_LIB}/workflows.sh"
 # 0. GUARDIA: TOOLSET CANÓNICO (evita "se arregla y vuelve" por rama del submódulo)
 # ==============================================================================
 DEVTOOLS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-DEVTOOLS_CANONICAL_REFS=("${DEVTOOLS_CANONICAL_REFS[@]:-main feature/dev-update}")
+DEVTOOLS_CANONICAL_REFS=("${DEVTOOLS_CANONICAL_REFS[@]:-dev feature/dev-update}")
 DEVTOOLS_BYPASS_CANONICAL_GUARD="${DEVTOOLS_BYPASS_CANONICAL_GUARD:-0}"
+
+# Detectar -y/--yes temprano para el guard (porque el parseo formal ocurre después)
+__EARLY_ASSUME_YES="${DEVTOOLS_ASSUME_YES:-0}"
+for __a in "$@"; do
+  case "$__a" in
+    -y|--yes) __EARLY_ASSUME_YES=1 ;;
+  esac
+done
 
 if [[ "$DEVTOOLS_BYPASS_CANONICAL_GUARD" != "1" ]] && git -C "$DEVTOOLS_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   tool_branch="$(git -C "$DEVTOOLS_ROOT" branch --show-current 2>/dev/null || echo "")"
@@ -52,6 +60,14 @@ if [[ "$DEVTOOLS_BYPASS_CANONICAL_GUARD" != "1" ]] && git -C "$DEVTOOLS_ROOT" re
   for ref in "${DEVTOOLS_CANONICAL_REFS[@]}"; do
     [[ "$tool_branch" == "$ref" ]] && allowed=1 && break
   done
+
+  # Excepción: main permitido solo para hotfix explícito o si estás en hotfix/*
+  __cmd="${1:-}"
+  if [[ "$tool_branch" == "main" ]]; then
+    if [[ "$__cmd" == "hotfix" || "$__cmd" == "hotfix-finish" || "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}" == hotfix/* ]]; then
+      allowed=1
+    fi
+  fi
 
   if [[ "$allowed" -ne 1 ]]; then
     echo
@@ -66,7 +82,7 @@ if [[ "$DEVTOOLS_BYPASS_CANONICAL_GUARD" != "1" ]] && git -C "$DEVTOOLS_ROOT" re
     fi
 
     # En --yes asumimos switch automático al primer canónico
-    if [[ "${DEVTOOLS_ASSUME_YES:-0}" == "1" ]] || ask_yes_no "¿Cambiar el toolset a '${DEVTOOLS_CANONICAL_REFS[0]}' y re-ejecutar?"; then
+    if [[ "$__EARLY_ASSUME_YES" == "1" ]] || ask_yes_no "¿Cambiar el toolset a '${DEVTOOLS_CANONICAL_REFS[0]}' y re-ejecutar?"; then
       git -C "$DEVTOOLS_ROOT" fetch origin --prune >/dev/null 2>&1 || true
       git -C "$DEVTOOLS_ROOT" checkout "${DEVTOOLS_CANONICAL_REFS[0]}" >/dev/null 2>&1 || die "No pude cambiar a rama canónica."
       exec "$DEVTOOLS_ROOT/bin/git-promote.sh" "$@"
@@ -164,6 +180,9 @@ if [[ -n "$TARGET_ENV" && "$TARGET_ENV" != "_dev-monitor" ]]; then
     # Dev monitor (admin) no requiere repo limpio (solo observación), salvo modo directo
     if [[ "$TARGET_ENV" == "dev" && "${DEVTOOLS_PROMOTE_DEV_DIRECT:-0}" != "1" ]]; then
         :
+    # Doctor no requiere confirmación ni guardias
+    elif [[ "$TARGET_ENV" == "doctor" ]]; then
+        :
     else
     
     # 1. Validar que el working tree esté limpio antes de cualquier operación destructiva
@@ -177,6 +196,8 @@ if [[ -n "$TARGET_ENV" && "$TARGET_ENV" != "_dev-monitor" ]]; then
     # 2. Confirmación Obligatoria (Anti-errores)
     # Dev monitor (admin) NO es destructivo por defecto → no mostrar warning global
     if [[ "$TARGET_ENV" == "dev" && "${DEVTOOLS_PROMOTE_DEV_DIRECT:-0}" != "1" ]]; then
+        :
+    elif [[ "$TARGET_ENV" == "doctor" ]]; then
         :
     elif [[ "$DEVTOOLS_AUTO_APPROVE" == "false" ]]; then
         echo
@@ -192,6 +213,62 @@ if [[ -n "$TARGET_ENV" && "$TARGET_ENV" != "_dev-monitor" ]]; then
 fi
 
 case "$TARGET_ENV" in
+    doctor)
+        # Doctor: checks rápidos de coherencia (no destructivo)
+        failures=0
+        strict="${DEVTOOLS_DOCTOR_STRICT:-0}"
+        echo
+        echo "🩺 devtools doctor"
+
+        # A) dev-update: no debe tener el log viejo
+        du="${DEVTOOLS_ROOT}/lib/promote/workflows/dev-update.sh"
+        if [[ -f "$du" ]] && grep -q "Limpiando rama fuente ya integrada" "$du"; then
+            echo "❌ dev-update.sh: aún contiene limpieza vieja"
+            failures=$((failures+1))
+        else
+            echo "✅ dev-update.sh: OK (sin limpieza vieja)"
+        fi
+
+        # B) dev-update: debe invocar maybe_delete_source_branch
+        if [[ -f "$du" ]] && ! grep -q "maybe_delete_source_branch" "$du"; then
+            echo "❌ dev-update.sh: NO invoca maybe_delete_source_branch"
+            failures=$((failures+1))
+        else
+            echo "✅ dev-update.sh: usa maybe_delete_source_branch"
+        fi
+
+        # C) promote: landing override presente
+        if ! grep -q "DEVTOOLS_LAND_ON_SUCCESS_BRANCH" "$0"; then
+            echo "❌ git-promote: falta DEVTOOLS_LAND_ON_SUCCESS_BRANCH"
+            failures=$((failures+1))
+        else
+            echo "✅ git-promote: landing override OK"
+        fi
+
+        # D) --yes => assume yes
+        if ! grep -q "export DEVTOOLS_ASSUME_YES=1" "$0"; then
+            echo "❌ git-promote: --yes no propaga DEVTOOLS_ASSUME_YES=1"
+            failures=$((failures+1))
+        else
+            echo "✅ git-promote: --yes non-interactive OK"
+        fi
+
+        # E) guard canónico default correcto
+        if grep -q 'DEVTOOLS_CANONICAL_REFS=.*main' "$0"; then
+            echo "❌ guard canónico: main aún está en defaults"
+            failures=$((failures+1))
+        else
+            echo "✅ guard canónico: defaults sin main (dev + feature/dev-update)"
+        fi
+
+        echo
+        if [[ "$failures" -eq 0 ]]; then
+            echo "✅ Doctor OK"
+            exit 0
+        fi
+        echo "⚠️  Doctor encontró $failures problema(s)."
+        [[ "$strict" == "1" ]] && exit 1 || exit 0
+        ;;
     dev)
         # ✅ Si `git promote dev` termina en éxito, aterrizamos en dev
         export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="dev"
@@ -227,7 +304,7 @@ case "$TARGET_ENV" in
         finish_hotfix
         ;;
     *) 
-        echo "Uso: git promote [-y | --yes] [dev | staging | prod | sync | feature/dev-update | hotfix | hotfix-finish]"
+        echo "Uso: git promote [-y | --yes] [dev | staging | prod | sync | feature/dev-update | hotfix | hotfix-finish | doctor]"
         echo
         echo "Comandos disponibles:"
         echo "  dev                 : Monitor estricto (admin) del estado de 'dev' (PRs/CI). No crea PR."
@@ -240,6 +317,7 @@ case "$TARGET_ENV" in
         echo "  feature/<rama>      : Alias de lo anterior (squash + push a feature/dev-update)"
         echo "  hotfix              : Crea una rama de hotfix desde main"
         echo "  hotfix-finish       : Finaliza e integra el hotfix"
+        echo "  doctor              : Verifica la salud y coherencia del toolset"
         echo
         echo "Opciones:"
         echo "  -y, --yes           : Salta las confirmaciones de seguridad (Modo no-interactivo)"
