@@ -38,7 +38,7 @@ __wait_for_workflow_run_id_for_sha() {
 
         if [[ -n "${ref:-}" ]]; then
             run_id="$(
-              GH_PAGER=cat gh run list --workflow "$wf_file" --branch "$ref" -L 50 \
+                GH_PAGER=cat gh run list --workflow "$wf_file" --branch "$ref" -L 50 \
                 --json databaseId,headSha,status,conclusion \
                 --jq ".[] | select(.headSha==\"$sha_full\") | .databaseId" 2>/dev/null | head -n 1
             )"
@@ -46,7 +46,7 @@ __wait_for_workflow_run_id_for_sha() {
 
         if [[ -z "${run_id:-}" ]]; then
             run_id="$(
-              GH_PAGER=cat gh run list --workflow "$wf_file" -L 50 \
+                GH_PAGER=cat gh run list --workflow "$wf_file" -L 50 \
                 --json databaseId,headSha,status,conclusion \
                 --jq ".[] | select(.headSha==\"$sha_full\") | .databaseId" 2>/dev/null | head -n 1
             )"
@@ -122,9 +122,8 @@ gh_discover_prs_to_base() {
 # Obtiene metadatos ricos de un PR en formato JSON plano (para parsing fácil con jq)
 gh_get_pr_rich_details() {
     local pr_number="$1"
-    # statusCheckRollup nos da el estado general del CI (SUCCESS, FAILURE, PENDING)
     GH_PAGER=cat gh pr view "$pr_number" \
-        --json number,title,url,headRefName,reviewDecision,mergeable,statusCheckRollup \
+        --json number,title,url,headRefName,baseRefName,reviewDecision,mergeable,statusCheckRollup \
         2>/dev/null || echo "{}"
 }
 
@@ -134,22 +133,26 @@ gh_get_pr_checks_summary() {
     GH_PAGER=cat gh pr checks "$pr_number" || echo "No checks found."
 }
 
+gh_list_open_prs_rich() {
+  local limit="${1:-30}"
+  GH_PAGER=cat gh pr list --state open -L "$limit" \
+    --json number,title,url,headRefName,baseRefName,reviewDecision,mergeable,statusCheckRollup
+}
+
 # Renderiza una "Tarjeta" visual del PR en la terminal
 ui_render_pr_card() {
     local pr_json="$1"
-    
+
     # Parseo seguro con jq
-    local num title url head decision mergeable ci_state
+    local num title url head base decision mergeable ci_state
     num="$(echo "$pr_json" | jq -r '.number // "0"')"
     title="$(echo "$pr_json" | jq -r '.title // "Sin título"')"
     url="$(echo "$pr_json" | jq -r '.url // ""')"
     head="$(echo "$pr_json" | jq -r '.headRefName // "?"')"
+    base="$(echo "$pr_json" | jq -r '.baseRefName // "?"')"
     decision="$(echo "$pr_json" | jq -r '.reviewDecision // "NONE"')"
     mergeable="$(echo "$pr_json" | jq -r '.mergeable // "UNKNOWN"')"
-    
-    # [FIX] Validación defensiva para statusCheckRollup.
-    # Si el PR es nuevo, statusCheckRollup puede ser [] (array vacío) en vez de objeto.
-    # Verificamos el tipo antes de intentar acceder a .state
+
     ci_state="$(echo "$pr_json" | jq -r 'if (.statusCheckRollup | type) == "object" then (.statusCheckRollup.state // "NO_CI") else "NO_CI" end')"
 
     # Iconografía
@@ -169,8 +172,8 @@ ui_render_pr_card() {
     echo "────────────────────────────────────────────────────────────────────────────────"
     echo "📄 PR #$num: $title"
     echo "   $icon_review Review: $decision  |  $icon_merge Merge: $mergeable  |  $icon_ci CI: $ci_state"
+    echo "   🌿 Rama: $head -> $base"
     echo "   🔗 $url"
-    echo "   🌿 Rama: $head"
     echo "────────────────────────────────────────────────────────────────────────────────"
 }
 
@@ -259,4 +262,50 @@ wait_for_release_please_pr_number_optional() {
         sleep "$interval"
         elapsed=$((elapsed + interval))
     done
+}
+
+# Aprueba el PR y valida que GitHub haya registrado el cambio de estado
+gh_approve_pr_and_validate() {
+    local pr="$1"
+    log_info "👍 Aprobando PR #$pr ..."
+    local out
+    out="$(GH_PAGER=cat gh pr review "$pr" --approve 2>&1)" || {
+        echo "$out" >&2
+        if echo "$out" | grep -qi "approve your own pull request"; then
+            log_warn "🚫 GitHub no permite aprobar tu propio PR. Usa [m] merge (admin) o [f] force push."
+        fi
+        log_error "❌ Falló la aprobación del PR #$pr."
+        return 1
+    }
+    local decision
+    decision="$(GH_PAGER=cat gh pr view "$pr" --json reviewDecision --jq '.reviewDecision' 2>/dev/null || true)"
+    if [[ "$decision" == "APPROVED" ]]; then
+        log_success "✅ PR #$pr quedó APROBADO."
+        return 0
+    fi
+    log_warn "⚠️ PR #$pr no aparece como APPROVED (reviewDecision=$decision)."
+    return 1
+}
+
+# Monitorea el CI de un PR, esperando primero a que aparezca un Run
+gh_watch_pr_ci() {
+    local pr="$1"; local label="${2:-PR CI}"
+    local run_id=""
+    local tries=60
+    while [[ $tries -gt 0 ]]; do
+        run_id="$(gh_find_run_id_for_pr "$pr" || true)"
+        [[ -n "${run_id:-}" ]] && break
+        log_info "⏳ Esperando run para PR #$pr ... ($tries)"
+        sleep 5
+        tries=$((tries-1))
+    done
+    [[ -n "${run_id:-}" ]] || {
+        log_warn "ℹ️ No encontré runs para PR #$pr (puede que tu CI corra solo al merge/push a dev)."
+        return 0
+    }
+    
+    declare -F ui_render_run_dashboard >/dev/null && ui_render_run_dashboard "$run_id" "$label"
+    GH_PAGER=cat gh run watch "$run_id" --exit-status 2>&1 || return 1
+    declare -F ui_render_run_dashboard >/dev/null && ui_render_run_dashboard "$run_id" "${label} (final)"
+    return 0
 }

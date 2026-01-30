@@ -48,32 +48,6 @@ stream_branch_activity() {
     echo
 }
 
-__strict_pr_ok() {
-    local pr_json="$1"
-    local decision mergeable ci_state
-    decision="$(echo "$pr_json" | jq -r '.reviewDecision // "NONE"')"
-    mergeable="$(echo "$pr_json" | jq -r '.mergeable // "UNKNOWN"')"
-    ci_state="$(echo "$pr_json" | jq -r 'if (.statusCheckRollup | type)=="object" then (.statusCheckRollup.state // "NO_CI") else "NO_CI" end')"
-
-    [[ "$decision" == "APPROVED" ]] || return 1
-    [[ "$mergeable" == "MERGEABLE" ]] || return 1
-    [[ "$ci_state" == "SUCCESS" ]] || return 1
-    return 0
-}
-
-__strict_gate_check_or_fail() {
-    local prs=("$@")
-    [[ "${DEVTOOLS_BYPASS_STRICT:-0}" == "1" ]] && return 0
-    local bad=0
-    for pr_id in "${prs[@]}"; do
-        local j; j="$(gh_get_pr_rich_details "$pr_id")"
-        if ! __strict_pr_ok "$j"; then
-            bad=1
-        fi
-    done
-    [[ "$bad" == "0" ]] || return 1
-    return 0
-}
 
 promote_dev_monitor() {
     local input_pr="${1:-}"      # PR sugerido por to-dev.sh (si existe)
@@ -81,21 +55,47 @@ promote_dev_monitor() {
 
     banner "🕵️  MONITOR DE INTEGRACIÓN (Interactivo)"
 
+    local -a pr_candidates=()
+
+    # --------------------------------------------------------------------------
+    # 0. VISIBILIDAD TOTAL (Repositorio): mostrar PRs abiertos (sin gate)
+    # --------------------------------------------------------------------------
+    if declare -F gh_list_open_prs_rich >/dev/null; then
+        local all_json
+        all_json="$(gh_list_open_prs_rich 50 2>/dev/null || echo "[]")"
+
+        log_info "📋 PRs abiertos en el repo (visibilidad total):"
+        echo "$all_json" | jq -c '.[]' | while read -r pr; do
+            ui_render_pr_card "$pr"
+        done
+        echo
+
+        # Si quieres, puedes usar esto para poblar pr_candidates SOLO hacia dev:
+        # (así el monitor te muestra todo, pero “policía” actúa solo sobre base=dev)
+        local discovered
+        discovered="$(echo "$all_json" | jq -r '.[] | select(.baseRefName=="dev") | .number')"
+        # Reiniciamos candidatos y cargamos solo los PRs hacia dev
+        for p in $discovered; do
+            [[ -n "$p" ]] && pr_candidates+=("$p")
+        done
+    fi
+
     # --------------------------------------------------------------------------
     # 1. Fase de Descubrimiento (Discovery)
     # --------------------------------------------------------------------------
-    local pr_candidates=()
-    
-    if [[ -n "$input_pr" ]]; then
-        pr_candidates+=("$input_pr")
-    else
-        log_info "🔍 Buscando PRs abiertos hacia 'dev'..."
-        # Convertir salida separada por espacios a array
-        local discovered
-        discovered="$(gh_discover_prs_to_base "dev")"
-        for p in $discovered; do
-            pr_candidates+=("$p")
-        done
+
+    # Si el bloque 0 ya pobló pr_candidates (PRs hacia dev), no repitas discovery
+    if [[ ${#pr_candidates[@]} -eq 0 ]]; then
+        if [[ -n "${DEVTOOLS_TARGET_PRS:-}" ]]; then
+            for p in $DEVTOOLS_TARGET_PRS; do pr_candidates+=("$p"); done
+        elif [[ -n "$input_pr" ]]; then
+            pr_candidates+=("$input_pr")
+        else
+            log_info "🔍 Buscando PRs abiertos hacia 'dev'..."
+            local discovered
+            discovered="$(gh_discover_prs_to_base "dev")"
+            for p in $discovered; do pr_candidates+=("$p"); done
+        fi
     fi
     # Siempre: mostrar actividad en dev (builds en curso) si hay TTY
     stream_branch_activity "dev" "Dev Health"
