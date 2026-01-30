@@ -57,7 +57,12 @@ TARGET_ENV="${1:-}"
 # 0. GUARDIA: TOOLSET CANÓNICO (evita "se arregla y vuelve" por rama del submódulo)
 # ==============================================================================
 DEVTOOLS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-if [[ ${#DEVTOOLS_CANONICAL_REFS[@]:-0} -eq 0 ]]; then
+# Inicializar array canónico si no existe o está vacío (Bash-safe)
+if ! declare -p DEVTOOLS_CANONICAL_REFS >/dev/null 2>&1; then
+    DEVTOOLS_CANONICAL_REFS=(dev feature/dev-update)
+elif [[ "$(declare -p DEVTOOLS_CANONICAL_REFS 2>/dev/null)" != "declare -a"* ]]; then
+    DEVTOOLS_CANONICAL_REFS=(dev feature/dev-update)
+elif [[ "${#DEVTOOLS_CANONICAL_REFS[@]}" -eq 0 ]]; then
     DEVTOOLS_CANONICAL_REFS=(dev feature/dev-update)
 fi
 DEVTOOLS_BYPASS_CANONICAL_GUARD="${DEVTOOLS_BYPASS_CANONICAL_GUARD:-0}"
