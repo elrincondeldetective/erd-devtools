@@ -57,58 +57,59 @@ TARGET_ENV="${1:-}"
 # 0. GUARDIA: TOOLSET CANÓNICO (evita "se arregla y vuelve" por rama del submódulo)
 # ==============================================================================
 DEVTOOLS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-# Inicializar array canónico si no existe o está vacío (Bash-safe)
-if ! declare -p DEVTOOLS_CANONICAL_REFS >/dev/null 2>&1; then
-    DEVTOOLS_CANONICAL_REFS=(dev feature/dev-update)
-elif [[ "$(declare -p DEVTOOLS_CANONICAL_REFS 2>/dev/null)" != "declare -a"* ]]; then
-    DEVTOOLS_CANONICAL_REFS=(dev feature/dev-update)
-elif [[ "${#DEVTOOLS_CANONICAL_REFS[@]}" -eq 0 ]]; then
-    DEVTOOLS_CANONICAL_REFS=(dev feature/dev-update)
-fi
-DEVTOOLS_BYPASS_CANONICAL_GUARD="${DEVTOOLS_BYPASS_CANONICAL_GUARD:-0}"
 
-if [[ "$DEVTOOLS_BYPASS_CANONICAL_GUARD" != "1" ]] && git -C "$DEVTOOLS_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    tool_branch="$(git -C "$DEVTOOLS_ROOT" branch --show-current 2>/dev/null || echo "")"
-    tool_sha="$(git -C "$DEVTOOLS_ROOT" rev-parse --short HEAD 2>/dev/null || echo "unknown")"
-    tool_ver="$(cat "$DEVTOOLS_ROOT/lib/core/version.sh" 2>/dev/null || echo "unknown")"
-
-    allowed=0
-    for ref in "${DEVTOOLS_CANONICAL_REFS[@]}"; do
-        [[ "$tool_branch" == "$ref" ]] && allowed=1 && break
-    done
-
-    # Excepción: main permitido solo para hotfix explícito (comando) o si el toolset ya está en hotfix/*
-
-    __cmd="${1:-}"
-    if [[ "$tool_branch" == "main" ]]; then
-        if [[ "$__cmd" == "hotfix" || "$__cmd" == "hotfix-finish" || "$tool_branch" == hotfix/* ]]; then
-        allowed=1
-        fi
+# Skip guard para doctor (diagnóstico no debe bloquear)
+if [[ "${TARGET_ENV:-}" == "doctor" ]]; then
+    :
+else
+    # Inicializar array canónico si no existe o está vacío (Bash-safe)
+    if ! declare -p DEVTOOLS_CANONICAL_REFS >/dev/null 2>&1; then
+        DEVTOOLS_CANONICAL_REFS=(dev feature/dev-update)
+    elif [[ "$(declare -p DEVTOOLS_CANONICAL_REFS 2>/dev/null)" != "declare -a"* ]]; then
+        DEVTOOLS_CANONICAL_REFS=(dev feature/dev-update)
+    elif [[ "${#DEVTOOLS_CANONICAL_REFS[@]}" -eq 0 ]]; then
+        DEVTOOLS_CANONICAL_REFS=(dev feature/dev-update)
     fi
 
-    if [[ "$allowed" -ne 1 ]]; then
-        echo
-        log_warn "🧭 Toolset NO canónico detectado: branch='${tool_branch:-detached}' sha=${tool_sha} (devtools ${tool_ver})"
-        log_warn "Este repo .devtools es versionado por rama: el comportamiento cambia según tu working tree."
-        echo "✅ Recomendado: usar ${DEVTOOLS_CANONICAL_REFS[*]}"
-        echo
+    DEVTOOLS_BYPASS_CANONICAL_GUARD="${DEVTOOLS_BYPASS_CANONICAL_GUARD:-0}"
 
-        # Repo sucio => no tocamos nada
-        if [[ -n "$(git -C "$DEVTOOLS_ROOT" status --porcelain 2>/dev/null)" ]]; then
-        die "El toolset tiene cambios locales. Haz commit/stash o exporta DEVTOOLS_BYPASS_CANONICAL_GUARD=1."
+    if [[ "$DEVTOOLS_BYPASS_CANONICAL_GUARD" != "1" ]] && git -C "$DEVTOOLS_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        tool_branch="$(git -C "$DEVTOOLS_ROOT" branch --show-current 2>/dev/null || echo "")"
+        tool_sha="$(git -C "$DEVTOOLS_ROOT" rev-parse --short HEAD 2>/dev/null || echo "unknown")"
+        tool_ver="$(cat "$DEVTOOLS_ROOT/lib/core/version.sh" 2>/dev/null || echo "unknown")"
+
+        allowed=0
+        for ref in "${DEVTOOLS_CANONICAL_REFS[@]}"; do
+            [[ "$tool_branch" == "$ref" ]] && allowed=1 && break
+        done
+
+        # Excepción: main permitido solo para hotfix explícito
+        __cmd="${TARGET_ENV:-${1:-}}"
+        if [[ "$tool_branch" == "main" && ( "$__cmd" == "hotfix" || "$__cmd" == "hotfix-finish" ) ]]; then
+            allowed=1
         fi
 
-        # En --yes asumimos switch automático al primer canónico
-        if [[ "${DEVTOOLS_ASSUME_YES:-0}" == "1" ]] || ask_yes_no "¿Cambiar el toolset a '${DEVTOOLS_CANONICAL_REFS[0]}' y re-ejecutar?"; then
-        git -C "$DEVTOOLS_ROOT" fetch origin --prune >/dev/null 2>&1 || true
-        git -C "$DEVTOOLS_ROOT" checkout "${DEVTOOLS_CANONICAL_REFS[0]}" >/dev/null 2>&1 || die "No pude cambiar a rama canónica."
-        exec "$DEVTOOLS_ROOT/bin/git-promote.sh" "$@"
-        else
-        die "Abortado para evitar ejecutar un toolset desalineado. Cambia a una rama canónica y reintenta."
+        if [[ "$allowed" -ne 1 ]]; then
+            echo
+            log_warn "🧭 Toolset NO canónico detectado: branch='${tool_branch:-detached}' sha=${tool_sha} (devtools ${tool_ver})"
+            log_warn "Este repo .devtools es versionado por rama: el comportamiento cambia según tu working tree."
+            echo "✅ Recomendado: usar ${DEVTOOLS_CANONICAL_REFS[*]}"
+            echo
+
+            if [[ -n "$(git -C "$DEVTOOLS_ROOT" status --porcelain 2>/dev/null)" ]]; then
+                die "El toolset tiene cambios locales. Haz commit/stash o exporta DEVTOOLS_BYPASS_CANONICAL_GUARD=1."
+            fi
+
+            if [[ "${DEVTOOLS_ASSUME_YES:-0}" == "1" ]] || ask_yes_no "¿Cambiar el toolset a '${DEVTOOLS_CANONICAL_REFS[0]}' y re-ejecutar?"; then
+                git -C "$DEVTOOLS_ROOT" fetch origin --prune >/dev/null 2>&1 || true
+                git -C "$DEVTOOLS_ROOT" checkout "${DEVTOOLS_CANONICAL_REFS[0]}" >/dev/null 2>&1 || die "No pude cambiar a rama canónica."
+                exec "$DEVTOOLS_ROOT/bin/git-promote.sh" "$@"
+            else
+                die "Abortado para evitar ejecutar un toolset desalineado. Cambia a una rama canónica y reintenta."
+            fi
         fi
     fi
 fi
-
 # ==============================================================================
 # 1.1 CONTEXTO: rama desde la que se invoca (antes de cualquier checkout)
 # ==============================================================================
