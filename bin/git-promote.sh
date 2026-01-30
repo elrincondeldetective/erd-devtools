@@ -94,6 +94,7 @@ trap 'cleanup_on_exit' EXIT INT TERM
 DEVTOOLS_AUTO_APPROVE=false
 if [[ "${1:-}" == "-y" || "${1:-}" == "--yes" ]]; then
     export DEVTOOLS_AUTO_APPROVE=true
+    export DEVTOOLS_ASSUME_YES=1
     shift # Elimina el flag de los argumentos para no romper el router
 fi
 
