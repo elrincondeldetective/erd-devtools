@@ -169,7 +169,8 @@ trap 'cleanup_on_exit' EXIT INT TERM
 
 # Si no estamos en modo simple, cargamos las llaves SSH antes de empezar
 # EXCEPCIÓN: `_dev-monitor` debe ser no-interactivo (puede correr con nohup/sin TTY).
-if [[ "${SIMPLE_MODE:-false}" == "false" && "${1:-}" != "_dev-monitor" ]]; then
+# Doctor y _dev-monitor deben ser no-interactivos (sin identidad/SSH)
+if [[ "${SIMPLE_MODE:-false}" == "false" && "${1:-}" != "_dev-monitor" && "${1:-}" != "doctor" ]]; then
     setup_git_identity
 fi
 
@@ -266,12 +267,12 @@ case "$TARGET_ENV" in
             echo "✅ git-promote: --yes non-interactive OK"
         fi
 
-        # E) guard canónico default correcto
-        if grep -q 'DEVTOOLS_CANONICAL_REFS=.*main' "$0"; then
-            echo "❌ guard canónico: main aún está en defaults"
-            failures=$((failures+1))
+       # E) guard canónico default correcto (debe ser: dev + feature/dev-update)
+        if grep -q 'DEVTOOLS_CANONICAL_REFS=(dev feature/dev-update)' "$0"; then
+            echo "✅ guard canónico: defaults OK (dev + feature/dev-update)"
         else
-            echo "✅ guard canónico: defaults sin main (dev + feature/dev-update)"
+            echo "❌ guard canónico: defaults NO son (dev + feature/dev-update)"
+            failures=$((failures+1))
         fi
 
         echo
