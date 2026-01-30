@@ -37,6 +37,46 @@ source "${PROMOTE_LIB}/gitops-integration.sh"
 source "${PROMOTE_LIB}/workflows.sh"
 
 # ==============================================================================
+# 0. GUARDIA: TOOLSET CANÓNICO (evita "se arregla y vuelve" por rama del submódulo)
+# ==============================================================================
+DEVTOOLS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+DEVTOOLS_CANONICAL_REFS=("${DEVTOOLS_CANONICAL_REFS[@]:-main feature/dev-update}")
+DEVTOOLS_BYPASS_CANONICAL_GUARD="${DEVTOOLS_BYPASS_CANONICAL_GUARD:-0}"
+
+if [[ "$DEVTOOLS_BYPASS_CANONICAL_GUARD" != "1" ]] && git -C "$DEVTOOLS_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  tool_branch="$(git -C "$DEVTOOLS_ROOT" branch --show-current 2>/dev/null || echo "")"
+  tool_sha="$(git -C "$DEVTOOLS_ROOT" rev-parse --short HEAD 2>/dev/null || echo "unknown")"
+  tool_ver="$(cat "$DEVTOOLS_ROOT/lib/core/version.sh" 2>/dev/null || echo "unknown")"
+
+  allowed=0
+  for ref in "${DEVTOOLS_CANONICAL_REFS[@]}"; do
+    [[ "$tool_branch" == "$ref" ]] && allowed=1 && break
+  done
+
+  if [[ "$allowed" -ne 1 ]]; then
+    echo
+    log_warn "🧭 Toolset NO canónico detectado: branch='${tool_branch:-detached}' sha=${tool_sha} (devtools ${tool_ver})"
+    log_warn "Este repo .devtools es versionado por rama: el comportamiento cambia según tu working tree."
+    echo "✅ Recomendado: usar ${DEVTOOLS_CANONICAL_REFS[*]}"
+    echo
+
+    # Repo sucio => no tocamos nada
+    if [[ -n "$(git -C "$DEVTOOLS_ROOT" status --porcelain 2>/dev/null)" ]]; then
+      die "El toolset tiene cambios locales. Haz commit/stash o exporta DEVTOOLS_BYPASS_CANONICAL_GUARD=1."
+    fi
+
+    # En --yes asumimos switch automático al primer canónico
+    if [[ "${DEVTOOLS_ASSUME_YES:-0}" == "1" ]] || ask_yes_no "¿Cambiar el toolset a '${DEVTOOLS_CANONICAL_REFS[0]}' y re-ejecutar?"; then
+      git -C "$DEVTOOLS_ROOT" fetch origin --prune >/dev/null 2>&1 || true
+      git -C "$DEVTOOLS_ROOT" checkout "${DEVTOOLS_CANONICAL_REFS[0]}" >/dev/null 2>&1 || die "No pude cambiar a rama canónica."
+      exec "$DEVTOOLS_ROOT/bin/git-promote.sh" "$@"
+    else
+      die "Abortado para evitar ejecutar un toolset desalineado. Cambia a una rama canónica y reintenta."
+    fi
+  fi
+fi
+
+# ==============================================================================
 # 1.1 CONTEXTO: rama desde la que se invoca (antes de cualquier checkout)
 # ==============================================================================
 # ✅ FIX: siempre inicializar estas vars (set -u no perdona)
