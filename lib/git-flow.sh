@@ -109,9 +109,12 @@ ensure_feature_branch_before_commit() {
   if is_protected_branch "$branch"; then
     local short_sha new_branch
     short_sha="$(git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M%S)"
+    # FIX: normalizar por seguridad (evita casos como "-c79fd03")
+    short_sha="$(echo "$short_sha" | tr -cd '0-9a-f')"
+    [[ -n "$short_sha" ]] || short_sha="$(date +%Y%m%d%H%M%S)"
     
     # Creamos nombre único basado en la rama original
-    new_branch="$(unique_branch_name "feature/${branch}-${short_sha}")"
+    new_branch="$(unique_branch_name "feature/$(sanitize_feature_suffix "${branch}-${short_sha}")")"
 
     echo "🧹 Estás en rama protegida '$branch'. Moviendo el trabajo a '$new_branch' ANTES del commit..."
     git checkout -b "$new_branch"
