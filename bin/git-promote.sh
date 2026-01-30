@@ -49,87 +49,42 @@ fi
 
 export DEVTOOLS_PROMOTE_FROM_SHA="${DEVTOOLS_PROMOTE_FROM_SHA:-$(git rev-parse HEAD 2>/dev/null || true)}"
 
+# Landing override (solo en éxito). Vacío = comportamiento antiguo (restaurar).
+export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="${DEVTOOLS_LAND_ON_SUCCESS_BRANCH:-}"
+
 # ==============================================================================
 # 1.2 SEGURIDAD DE RAMAS (LANDING TRAP) - [NUEVO]
 # ==============================================================================
 # Esta función se ejecuta automáticamente al salir (EXIT) o al cancelar (Ctrl+C).
-# Garantiza que el usuario siempre regrese a su rama original.
+# Garantiza que el usuario siempre regrese a su rama original o aterrice en la destino si hubo éxito.
 cleanup_on_exit() {
-    local reason="${1:-EXIT}"
     local exit_code=$?
-
-    # Desactivar trap para evitar bucles infinitos
     trap - EXIT INT TERM
-    # ✅ Si un workflow definió landing en éxito, obedecerlo
-    if [[ "$exit_code" -eq 0 && -n "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH:-}" ]]; then
-        echo
-        echo "🛬 Finalizando flujo (éxito): quedando en '${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}'..."
-        git checkout "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}" >/dev/null 2>&1 || true
-        exit $exit_code
-    fi
 
-    # ✅ NUEVO: permitir que los workflows definan dónde aterrizar en éxito
-    # Ej: export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="feature/dev-update"
-    if [[ "$exit_code" -eq 0 && -n "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH:-}" ]]; then
-        echo
-        echo "🛬 Finalizando flujo (éxito): quedando en '${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}'..."
-        if declare -F ensure_local_branch_tracks_remote >/dev/null; then
-            ensure_local_branch_tracks_remote "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}" "origin" >/dev/null 2>&1 || true
-        fi
-        git checkout "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}" >/dev/null 2>&1 || true
-        exit $exit_code
-    fi
-
-    # ✅ NUEVO: si fue éxito y REALMENTE tocamos dev, quedarnos en dev
-    if [[ "${TARGET_ENV:-}" == "dev" && "$exit_code" -eq 0 && "${DEVTOOLS_TOUCHED_DEV:-0}" == "1" ]]; then
-        echo
-        echo "🛬 Finalizando flujo (éxito): quedando en 'dev'..."
-        # Asegurar que exista dev local (si tu helper está disponible)
-        if declare -F ensure_local_branch_tracks_remote >/dev/null; then
-            ensure_local_branch_tracks_remote "dev" "origin" >/dev/null 2>&1 || true
-        fi
-        git checkout dev >/dev/null 2>&1 || true
-        exit $exit_code
-    fi
-    
-    # Solo ejecutamos la restauración si NO estamos en modo monitor interno
-    # (El monitor interno solía correr en subshell/nohup, aquí protegemos el flujo principal)
     if [[ "${TARGET_ENV:-}" != "_dev-monitor" ]]; then
-        # La función git_restore_branch_safely debe estar en lib/core/git-ops.sh
+        # ÉXITO: obedecer landing override si existe
+        if [[ "$exit_code" -eq 0 && -n "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH:-}" ]]; then
+            local cur
+            cur="$(git branch --show-current 2>/dev/null || true)"
+            if [[ "$cur" != "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}" ]]; then
+                echo "🛬 Finalizando flujo (éxito): quedando en '${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}'..."
+                git checkout "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}" >/dev/null 2>&1 || true
+            fi
+            exit 0
+        fi
+
+        # FALLO/CANCEL: restaurar rama inicial
         if declare -F git_restore_branch_safely >/dev/null; then
-            # INT/TERM: siempre restaurar a rama inicial (seguro)
-            if [[ "$reason" != "EXIT" ]]; then
-                git_restore_branch_safely "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}"
-                exit "$exit_code"
-            fi
-
-            # EXIT: si hay landing “siempre”, obedecerlo aunque exit!=0 (modo policía)
-            if [[ -n "${DEVTOOLS_LAND_ON_EXIT_BRANCH:-}" ]]; then
-                git checkout "${DEVTOOLS_LAND_ON_EXIT_BRANCH}" >/dev/null 2>&1 || true
-                exit "$exit_code"
-            fi
-
-            # EXIT éxito: landing por success override si existe; si no, quedarse donde esté
-            if [[ "$exit_code" -eq 0 ]]; then
-                if [[ -n "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH:-}" ]]; then
-                    git checkout "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}" >/dev/null 2>&1 || true
-                fi
-            else
-                # EXIT fallo real: restaurar a rama inicial
-                git_restore_branch_safely "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}"
-            fi
+            git_restore_branch_safely "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}"
         else
-            # Fallback básico por si no se actualizó git-ops.sh
             echo "⚠️  Finalizando script. Volviendo a ${DEVTOOLS_PROMOTE_FROM_BRANCH:-}..."
             git checkout "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}" >/dev/null 2>&1 || true
         fi
     fi
     exit $exit_code
 }
-# Registramos el trap con “reason” explícito
-trap 'cleanup_on_exit EXIT' EXIT
-trap 'cleanup_on_exit INT'  INT
-trap 'cleanup_on_exit TERM' TERM
+# Registramos el trap
+trap 'cleanup_on_exit' EXIT INT TERM
 
 # ==============================================================================
 # 2. PARSEO DE FLAGS Y SETUP DE IDENTIDAD
@@ -154,9 +109,11 @@ fi
 
 TARGET_ENV="${1:-}"
 
-# Landing policy por comando
+# Landing policy por comando (opcional, legacy police mode)
 if [[ "$TARGET_ENV" == "dev" ]]; then
-    # Policía: siempre caer en dev aunque exit!=0
+    # Policía: siempre caer en dev aunque exit!=0 (si se requiere lógica estricta antigua)
+    # Nota: La nueva cleanup_on_exit prioriza éxito/fallo genérico,
+    # pero dev puede configurarse aquí si fuera necesario.
     export DEVTOOLS_LAND_ON_EXIT_BRANCH="dev"
 fi
 
