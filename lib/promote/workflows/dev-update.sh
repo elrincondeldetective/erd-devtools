@@ -5,8 +5,8 @@
 # Reglas:
 # - git promote feature/<rama> o git promote feature/dev-update
 #   debe terminar en feature/dev-update (validador visual).
-# - Debe hacer squash + push a origin/feature/dev-update para que remoto=verdad
-#   y evitar divergencias que luego rompen el flujo.
+# - Debe sincronizar feature/dev-update con el SHA EXACTO de la rama fuente.
+#   (overwrite/force-with-lease) para preservar SHA y evitar divergencias por squash.
 #
 # Dependencias esperadas (ya cargadas por el orquestador):
 # - utils.sh (log_*, die, ask_yes_no, is_tty)
@@ -172,8 +172,6 @@ promote_dev_update_force_sync() {
     local canonical="feature/dev-update"
 
     # Rama fuente:
-    # - si viene argumento (ej: feature/x), lo usamos
-    # - si no, tomamos la actual
     local source="${1:-}"
     if [[ -z "${source:-}" ]]; then
         source="$(git branch --show-current 2>/dev/null || echo "")"
@@ -181,15 +179,7 @@ promote_dev_update_force_sync() {
     source="$(echo "$source" | tr -d '[:space:]')"
     [[ -n "${source:-}" ]] || die "No pude detectar rama fuente."
 
-    # Si ya estás en canonical, solo asegura push (paridad)
-    if [[ "$source" == "$canonical" ]]; then
-        log_info "Ya estás en '${canonical}'. Asegurando push para paridad..."
-        git push origin "$canonical" >/dev/null 2>&1 || true
-        log_success "✅ OK. Te quedas en: ${canonical}"
-        return 0
-    fi
-
-    # Si la fuente no existe localmente, abortamos (evita refs raras)
+    # Si la fuente no existe localmente, abortamos (evita usar refs raras)
     if ! git show-ref --verify --quiet "refs/heads/${source}"; then
         die "La rama fuente '${source}' no existe localmente. Haz checkout de esa rama y reintenta."
     fi
@@ -201,10 +191,10 @@ promote_dev_update_force_sync() {
     echo
     log_info "🧨 SYNC SHA EXACTO HACIA '${canonical}'"
     log_info "    Fuente : ${source} @${source_sha:0:7}"
-    log_info "    Destino: ${canonical} (overwrite/force-with-lease)"
+    log_info "    Destino: ${canonical} (overwrite)"
     echo
 
-    # Asegurar que canonical exista local/remoto (si no existe remoto, créalo desde source_sha)
+    # Asegurar canonical exista local/remoto (si no existe remoto, créalo desde source_sha)
     __ensure_branch_local_from_remote_or_create_and_push "$canonical" "origin" "$source_sha" || {
         die "No pude preparar '${canonical}' (local/remoto)."
     }
@@ -213,12 +203,10 @@ promote_dev_update_force_sync() {
     log_warn "🧨 Overwrite: '${canonical}' -> ${source_sha:0:7} (desde '${source}')"
     force_update_branch_to_sha "$canonical" "$source_sha" "origin" || die "No pude sobrescribir '${canonical}'."
 
-    # Quedarse en canonical
     git checkout "$canonical" >/dev/null 2>&1 || true
     log_success "✅ ${canonical} actualizado (SHA exacto) y pusheado."
     log_success "✅ Te quedas en: ${canonical}"
 
-    # Limpieza contractual (si aplica)
     maybe_delete_source_branch "$source"
     return 0
 }
