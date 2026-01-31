@@ -169,9 +169,14 @@ assert_golden_sha_matches_head_or_die() {
     golden="$(read_golden_sha 2>/dev/null || true)"
 
     if [[ -z "${golden:-}" ]]; then
-        # Si no hay golden guardado, no bloqueamos (compat), pero avisamos.
-        log_warn "No hay GOLDEN_SHA registrado. (Compat) Continuando sin validación estricta."
-        return 0
+        local f
+        f="$(resolve_golden_sha_file)"
+
+        log_error "❌ Error: No se detectó un GOLDEN_SHA válido."
+        echo "   file : $f"
+        echo "⛔ Staging/Prod requieren un commit certificado."
+        echo "👉 Solución: Ejecuta 'git promote dev' para validar los gates y generar el sello de calidad."
+        return 1
     fi
 
     local head_sha
