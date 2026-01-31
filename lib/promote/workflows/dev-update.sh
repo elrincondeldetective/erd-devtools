@@ -4,8 +4,8 @@
 # Reglas:
 # - git promote feature/<rama> o git promote feature/dev-update
 #   debe terminar en feature/dev-update (validador visual).
-# - Debe hacer squash + push a origin/feature/dev-update para que remoto=verdad
-#   y evitar divergencias que luego rompen el flujo.
+# - Debe sincronizar feature/dev-update con el SHA EXACTO de la rama fuente.
+#   (overwrite/force-with-lease) para preservar SHA y evitar divergencias por squash.
 #
 # Dependencias esperadas (ya cargadas por el orquestador):
 # - utils.sh (log_*, die, ask_yes_no, is_tty)
@@ -157,5 +157,55 @@ promote_dev_update_squash() {
     # Limpieza contractual (prompt default Sí + local+remoto + guardias)
     maybe_delete_source_branch "$source"
 
+    return 0
+}
+
+# ==============================================================================
+# NUEVO: FORCE SYNC (SHA exacto) hacia feature/dev-update
+# - En vez de squash merge, hace overwrite para que el SHA sea exactamente el mismo.
+# ==============================================================================
+promote_dev_update_force_sync() {
+    resync_submodules_hard
+    ensure_clean_git
+
+    local canonical="feature/dev-update"
+
+    # Rama fuente:
+    local source="${1:-}"
+    if [[ -z "${source:-}" ]]; then
+        source="$(git branch --show-current 2>/dev/null || echo "")"
+    fi
+    source="$(echo "$source" | tr -d '[:space:]')"
+    [[ -n "${source:-}" ]] || die "No pude detectar rama fuente."
+
+    # Si la fuente no existe localmente, abortamos (evita usar refs raras)
+    if ! git show-ref --verify --quiet "refs/heads/${source}"; then
+        die "La rama fuente '${source}' no existe localmente. Haz checkout de esa rama y reintenta."
+    fi
+
+    local source_sha
+    source_sha="$(git rev-parse "$source" 2>/dev/null || true)"
+    [[ -n "${source_sha:-}" ]] || die "No pude resolver SHA de la rama fuente: $source"
+
+    echo
+    log_info "🧨 SYNC SHA EXACTO HACIA '${canonical}'"
+    log_info "    Fuente : ${source} @${source_sha:0:7}"
+    log_info "    Destino: ${canonical} (overwrite)"
+    echo
+
+    # Asegurar canonical exista local/remoto (si no existe remoto, créalo desde source_sha)
+    __ensure_branch_local_from_remote_or_create_and_push "$canonical" "origin" "$source_sha" || {
+        die "No pude preparar '${canonical}' (local/remoto)."
+    }
+
+    # Overwrite: canonical = source_sha (mismo SHA)
+    log_warn "🧨 Overwrite: '${canonical}' -> ${source_sha:0:7} (desde '${source}')"
+    force_update_branch_to_sha "$canonical" "$source_sha" "origin" || die "No pude sobrescribir '${canonical}'."
+
+    git checkout "$canonical" >/dev/null 2>&1 || true
+    log_success "✅ ${canonical} actualizado (SHA exacto) y pusheado."
+    log_success "✅ Te quedas en: ${canonical}"
+
+    maybe_delete_source_branch "$source"
     return 0
 }

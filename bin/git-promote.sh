@@ -303,13 +303,13 @@ case "$TARGET_ENV" in
     dev-update|feature/dev-update)
         # Permite pasar una rama opcional como segundo argumento
         export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="feature/dev-update"
-        promote_dev_update_squash "${2:-}"
+        promote_dev_update_force_sync "${2:-}"
         ;;
     feature/*)
         # UX: permitir "git promote feature/mi-rama" para aplastar esa rama
         # dentro de feature/dev-update (y pushear el resultado al remoto).
         export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="feature/dev-update"
-        promote_dev_update_squash "$TARGET_ENV"
+        promote_dev_update_force_sync "$TARGET_ENV"
         ;;
     hotfix)
         create_hotfix
