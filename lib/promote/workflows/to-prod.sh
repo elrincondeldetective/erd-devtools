@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # /webapps/erd-ecosystem/.devtools/lib/promote/workflows/to-prod.sh
 #
+# Helper local: respeta -y/--yes (DEVTOOLS_ASSUME_YES=1) para prompts humanos.
+# Gates técnicos (Golden / waits / releases) NO se saltan.
+__confirm_or_yes() {
+    [[ "${DEVTOOLS_ASSUME_YES:-0}" == "1" ]] && return 0
+    ask_yes_no "$1"
+}
+
 # Este módulo maneja la promoción a PRODUCCIÓN:
 # - promote_to_prod: Fusiona staging -> main.
 # - Maneja 3 estrategias de tagging:
@@ -62,7 +69,8 @@ promote_to_prod() {
         log_info "   Este repo delega la creación del tag final a GitHub Actions."
         echo
 
-        if ! ask_yes_no "¿Promover a PRODUCCIÓN (sin crear tag local)?"; then exit 0; fi
+        # [FIX] Usar helper que respeta --yes
+        if ! __confirm_or_yes "¿Promover a PRODUCCIÓN (sin crear tag local)?"; then exit 0; fi
         ensure_clean_git
         
         local from_branch="${DEVTOOLS_PROMOTE_FROM_BRANCH:-$current}"
@@ -93,6 +101,33 @@ promote_to_prod() {
                 print_tags_at_sha "$main_sha" "tags@sha (post final)"
                 if repo_has_workflow_file "build-push"; then
                     wait_for_workflow_success_on_ref_or_sha_or_die "build-push.yaml" "$main_sha" "$final_tag" "Build and Push (tag final)"
+                fi
+
+                # Esperar GitHub Release del tag final
+                if repo_has_workflow_file "release-on-tag"; then
+                    local timeout="${DEVTOOLS_RELEASE_WAIT_TIMEOUT_SECONDS:-900}"
+                    local interval="${DEVTOOLS_RELEASE_WAIT_POLL_SECONDS:-5}"
+                    local elapsed=0
+
+                    log_info "🚀 Esperando GitHub Release para tag ${final_tag}..."
+                    while true; do
+                        if GH_PAGER=cat gh release view "$final_tag" --json url --jq '.url' >/dev/null 2>&1; then
+                            local url
+                            url="$(GH_PAGER=cat gh release view "$final_tag" --json url --jq '.url' 2>/dev/null || true)"
+                            [[ -n "${url:-}" && "${url:-null}" != "null" ]] && log_info "🔗 Release URL: ${url}"
+                            log_success "✅ GitHub Release publicado para ${final_tag}"
+                            break
+                        fi
+
+                        if (( elapsed >= timeout )); then
+                            log_error "Timeout esperando GitHub Release para ${final_tag}."
+                            log_error "⛔ Producción incompleta: el workflow release-on-tag no publicó el release."
+                            return 1
+                        fi
+
+                        sleep "$interval"
+                        elapsed=$((elapsed + interval))
+                    done
                 fi
             fi
         fi
@@ -168,7 +203,9 @@ promote_to_prod() {
     release_tag="${release_tag:-$suggested_tag}"
 
     prepend_release_notes_header "$tmp_notes" "Release Notes - ${release_tag} (Producción)"
-    if ! ask_yes_no "¿Confirmar pase a Producción ($release_tag)?"; then 
+    
+    # [FIX] Usar helper que respeta --yes
+    if ! __confirm_or_yes "¿Confirmar pase a Producción ($release_tag)?"; then 
         rm -f "$tmp_notes"
         trap - EXIT
         exit 0
@@ -187,6 +224,33 @@ promote_to_prod() {
         git push origin "$release_tag"
     fi
     log_success "✅ Producción actualizada ($release_tag)."
+    
+    # Esperar GitHub Release (Legacy Path)
+    if repo_has_workflow_file "release-on-tag"; then
+        local timeout="${DEVTOOLS_RELEASE_WAIT_TIMEOUT_SECONDS:-900}"
+        local interval="${DEVTOOLS_RELEASE_WAIT_POLL_SECONDS:-5}"
+        local elapsed=0
+
+        log_info "🚀 Esperando GitHub Release para tag ${release_tag}..."
+        while true; do
+            if GH_PAGER=cat gh release view "$release_tag" --json url --jq '.url' >/dev/null 2>&1; then
+                local url
+                url="$(GH_PAGER=cat gh release view "$release_tag" --json url --jq '.url' 2>/dev/null || true)"
+                [[ -n "${url:-}" && "${url:-null}" != "null" ]] && log_info "🔗 Release URL: ${url}"
+                log_success "✅ GitHub Release publicado para ${release_tag}"
+                break
+            fi
+
+            if (( elapsed >= timeout )); then
+                log_error "Timeout esperando GitHub Release para ${release_tag}."
+                log_error "⛔ Producción incompleta: el workflow release-on-tag no publicó el release."
+                return 1
+            fi
+
+            sleep "$interval"
+            elapsed=$((elapsed + interval))
+        done
+    fi
     
     # [FIX] CRASH FIX para Prod también
     rm -f "$tmp_notes"
