@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # /webapps/erd-ecosystem/.devtools/lib/promote/workflows/dev-update.sh
 #
+# NUEVO: modo SHA exacto (overwrite) hacia feature/dev-update
 # Reglas:
 # - git promote feature/<rama> o git promote feature/dev-update
 #   debe terminar en feature/dev-update (validador visual).
