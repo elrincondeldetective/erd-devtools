@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # /webapps/erd-ecosystem/.devtools/lib/promote/strategies/dev-direct.sh
 #
+# ⚠️ Seguridad: el modo directo/aplastante debe ser exclusivo de feature/dev-update.
 # Estrategia de promoción DIRECTA a DEV.
 # - promote_to_dev_direct: Aplasta (squash/reset) feature -> dev y hace push directo.
 # - promote_dev_direct_monitor: Monitorea CI/CD y Release Please tras el push.
@@ -108,6 +109,11 @@ promote_dev_direct_monitor() {
 promote_to_dev_direct() {
     resync_submodules_hard
     ensure_clean_git_or_die
+
+    # 🔒 HARDCODE: Solo permitido desde feature/dev-update (Lab -> Source of Truth)
+    if [[ "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}" != "feature/dev-update" ]]; then
+        die "⛔ El modo directo/aplastante solo está permitido desde feature/dev-update."
+    fi
 
     local feature_branch
     feature_branch="${DEVTOOLS_PROMOTE_FROM_BRANCH}"
