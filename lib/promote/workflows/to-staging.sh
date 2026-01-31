@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # /webapps/erd-ecosystem/.devtools/lib/promote/workflows/to-staging.sh
 #
+# Helper local: respeta -y/--yes (DEVTOOLS_ASSUME_YES=1) para prompts humanos.
+# Gates técnicos (Golden / waits / releases) NO se saltan.
+__confirm_or_yes() {
+    [[ "${DEVTOOLS_ASSUME_YES:-0}" == "1" ]] && return 0
+    ask_yes_no "$1"
+}
+
 # Este módulo maneja la promoción a STAGING:
 # - promote_to_staging: Fusiona dev -> staging.
 # - Valida Golden SHA.
@@ -78,7 +85,8 @@ promote_to_staging() {
             echo "     [Y] Sí (Auto):    Solo empujar cambios. GitHub crea el tag (vX.Y.Z-rcN)."
             echo "     [N] No (Manual): Quiero definir el tag yo mismo ahora."
             echo
-            if ask_yes_no "¿Delegar el tagging a GitHub?"; then
+            # [FIX] Usar helper que respeta --yes
+            if __confirm_or_yes "¿Delegar el tagging a GitHub?"; then
                 use_remote_tagger=1
             else
                 log_warn "🖐️  Modo Manual activado: Tú tienes el control."
@@ -129,6 +137,33 @@ promote_to_staging() {
                 print_tags_at_sha "$staging_sha" "tags@sha (post RC)"
                 if repo_has_workflow_file "build-push"; then
                     wait_for_workflow_success_on_ref_or_sha_or_die "build-push.yaml" "$staging_sha" "$rc_tag" "Build and Push (tag RC)"
+                fi
+
+                # Esperar GitHub Release (solo si este repo tiene release-on-tag)
+                if repo_has_workflow_file "release-on-tag"; then
+                    local timeout="${DEVTOOLS_RELEASE_WAIT_TIMEOUT_SECONDS:-900}"
+                    local interval="${DEVTOOLS_RELEASE_WAIT_POLL_SECONDS:-5}"
+                    local elapsed=0
+
+                    log_info "🚀 Esperando GitHub Release para tag ${rc_tag}..."
+                    while true; do
+                        if GH_PAGER=cat gh release view "$rc_tag" --json url --jq '.url' >/dev/null 2>&1; then
+                            local url
+                            url="$(GH_PAGER=cat gh release view "$rc_tag" --json url --jq '.url' 2>/dev/null || true)"
+                            [[ -n "${url:-}" && "${url:-null}" != "null" ]] && log_info "🔗 Release URL: ${url}"
+                            log_success "✅ GitHub Release publicado para ${rc_tag}"
+                            break
+                        fi
+
+                        if (( elapsed >= timeout )); then
+                            log_error "Timeout esperando GitHub Release para ${rc_tag}."
+                            log_error "⛔ Despliegue incompleto: el workflow release-on-tag no publicó el release."
+                            return 1
+                        fi
+
+                        sleep "$interval"
+                        elapsed=$((elapsed + interval))
+                    done
                 fi
             fi
         fi
@@ -211,7 +246,8 @@ promote_to_staging() {
 
     prepend_release_notes_header "$tmp_notes" "Release Notes - ${rc_tag} (Staging)"
     
-    if ! ask_yes_no "¿Desplegar a STAGING con tag $rc_tag?"; then 
+    # [FIX] Usar helper que respeta --yes
+    if ! __confirm_or_yes "¿Desplegar a STAGING con tag $rc_tag?"; then 
         # Si el usuario cancela, limpiamos el trap para no borrar archivos random
         rm -f "$tmp_notes"
         trap - EXIT

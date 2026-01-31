@@ -35,6 +35,10 @@ promote_sync_all() {
     local rc=0
 
     log_info "1/3 🧨 DEV (Lab -> Source of Truth)"
+    # Ejecutamos en subshell para aislar variables exportadas, aunque en este caso
+    # queremos que el GOLDEN_SHA persista, pero como promote_to_dev lo escribe en disco/memoria
+    # global (si usara vars globales), está bien.
+    # El uso de parentesis ( ) crea subshell, pero necesitamos que si falla, paremos.
     (
         export DEVTOOLS_PROMOTE_DEV_DIRECT=1
         promote_to_dev
