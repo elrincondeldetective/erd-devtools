@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # /webapps/erd-ecosystem/.devtools/lib/promote/workflows/checks.sh
 #
+# CHECKS.SH = ÚNICA FUENTE DE VERDAD (validaciones por SHA)
+# - Tabla de estado por workflow requerido
+# - Gate por SHA (PENDING con retry corto)
+# - Smart pick para --watch (FAILURE > IN_PROGRESS)
 # Este módulo contiene las funciones de verificación y espera (polling):
 # - wait_for_release_please_pr_number_or_die
 # - wait_for_tag_on_sha_or_die
@@ -217,4 +221,220 @@ ensure_clean_git_or_die() {
         echo "Sugerencia: git add . && git commit -m 'savepoint' o git stash"
         exit 1
     fi
+}
+
+# ==============================================================================
+# CONFIG: Workflows requeridos (centralizado en .devtools/config/workflows.conf)
+# ==============================================================================
+
+resolve_workflows_conf_file() {
+    # 1) Si estamos dentro del repo .devtools (REPO_ROOT == .devtools)
+    local root="${REPO_ROOT:-.}"
+    if [[ -f "${root}/config/workflows.conf" ]]; then
+        echo "${root}/config/workflows.conf"
+        return 0
+    fi
+
+    # 2) Si estamos en un superproyecto que contiene .devtools (WORKSPACE_ROOT)
+    if [[ -n "${WORKSPACE_ROOT:-}" && -f "${WORKSPACE_ROOT}/.devtools/config/workflows.conf" ]]; then
+        echo "${WORKSPACE_ROOT}/.devtools/config/workflows.conf"
+        return 0
+    fi
+
+    # 3) Fallback: cwd + .devtools/config
+    if [[ -f ".devtools/config/workflows.conf" ]]; then
+        echo ".devtools/config/workflows.conf"
+        return 0
+    fi
+
+    return 1
+}
+
+load_required_workflows_dev_or_die() {
+    local f=""
+    f="$(resolve_workflows_conf_file 2>/dev/null || true)"
+
+    if [[ -z "${f:-}" || ! -f "$f" ]]; then
+        log_error "❌ Error: No se encontró workflows.conf."
+        echo "   esperado: .devtools/config/workflows.conf"
+        echo "👉 Solución: crea el archivo y define REQUIRED_WORKFLOWS_DEV=(...)"
+        return 1
+    fi
+
+    # Respetar set -u del caller (temporalmente lo apagamos para source seguro)
+    local nounset_was_on=0
+    case "$-" in *u*) nounset_was_on=1 ;; esac
+    set +u
+    # shellcheck disable=SC1090
+    source "$f"
+    (( nounset_was_on )) && set -u
+
+    if ! declare -p REQUIRED_WORKFLOWS_DEV >/dev/null 2>&1; then
+        log_error "❌ workflows.conf no define REQUIRED_WORKFLOWS_DEV."
+        echo "   file: $f"
+        echo "👉 Ejemplo: REQUIRED_WORKFLOWS_DEV=(\"release-please.yaml\" \"build-push.yaml\")"
+        return 1
+    fi
+
+    if [[ "${#REQUIRED_WORKFLOWS_DEV[@]}" -eq 0 ]]; then
+        log_error "❌ REQUIRED_WORKFLOWS_DEV está vacío."
+        echo "   file: $f"
+        return 1
+    fi
+
+    export DEVTOOLS_WORKFLOWS_CONF_FILE="$f"
+    return 0
+}
+
+# ==============================================================================
+# API: obtener meta de un workflow para un SHA exacto (status + conclusion + run_id)
+# ==============================================================================
+
+__wf_meta_for_sha_once() {
+    # Args: wf_file sha_full ref(optional)
+    local wf_file="$1"
+    local sha_full="$2"
+    local ref="${3:-}"
+
+    [[ -n "${wf_file:-}" && -n "${sha_full:-}" ]] || return 1
+
+    local line=""
+    if [[ -n "${ref:-}" ]]; then
+        line="$(
+            GH_PAGER=cat gh run list --workflow "$wf_file" --branch "$ref" -L 50 \
+            --json databaseId,headSha,status,conclusion \
+            --jq ".[] | select(.headSha==\"$sha_full\") | \"\(.databaseId)|\(.status)|\(.conclusion // \"\")\"" \
+            2>/dev/null | head -n 1 || true
+        )"
+    else
+        line="$(
+            GH_PAGER=cat gh run list --workflow "$wf_file" -L 50 \
+            --json databaseId,headSha,status,conclusion \
+            --jq ".[] | select(.headSha==\"$sha_full\") | \"\(.databaseId)|\(.status)|\(.conclusion // \"\")\"" \
+            2>/dev/null | head -n 1 || true
+        )"
+    fi
+
+    [[ -n "${line:-}" ]] || return 1
+    echo "$line"
+    return 0
+}
+
+# ==============================================================================
+# GATE: workflows requeridos por SHA (tabla + PENDING retry + smart pick)
+# ==============================================================================
+
+# Output global para “smart watch”
+DEVTOOLS_GATE_SELECTED_RUN_ID=""
+DEVTOOLS_GATE_SELECTED_WORKFLOW=""
+DEVTOOLS_GATE_SELECTED_REASON=""
+
+gate_required_workflows_on_sha() {
+    # Args: sha_full ref workflows...
+    local sha_full="$1"
+    local ref="$2"
+    shift 2
+    local -a workflows=( "$@" )
+
+    local tries="${DEVTOOLS_GATE_PENDING_TRIES:-3}"
+    local interval="${DEVTOOLS_GATE_PENDING_POLL_SECONDS:-10}"
+
+    DEVTOOLS_GATE_SELECTED_RUN_ID=""
+    DEVTOOLS_GATE_SELECTED_WORKFLOW=""
+    DEVTOOLS_GATE_SELECTED_REASON=""
+
+    [[ -n "${sha_full:-}" ]] || { log_error "gate: falta sha"; return 1; }
+    [[ "${#workflows[@]}" -gt 0 ]] || { log_error "gate: no workflows"; return 1; }
+
+    echo
+    echo "┌───────────────────────────────────────────────────────────────"
+    echo "│ 🔎 Gate por SHA: ${sha_full:0:7}  (ref=${ref})"
+    [[ -n "${DEVTOOLS_WORKFLOWS_CONF_FILE:-}" ]] && echo "│ config: ${DEVTOOLS_WORKFLOWS_CONF_FILE}"
+    echo "├───────────────────────────────┬──────────────┬───────────────"
+    echo "│ Workflow                      │ Estado       │ Conclusión"
+    echo "├───────────────────────────────┼──────────────┼───────────────"
+
+    local all_ok=1
+    local wf
+    for wf in "${workflows[@]}"; do
+        local meta=""
+        local i=0
+        while (( i < tries )); do
+            meta="$(__wf_meta_for_sha_once "$wf" "$sha_full" "$ref" 2>/dev/null || true)"
+            [[ -n "${meta:-}" ]] && break
+            i=$((i+1))
+            (( i < tries )) && sleep "$interval"
+        done
+
+        local run_id="" status="" conclusion="" state_icon="" state_txt=""
+
+        if [[ -z "${meta:-}" ]]; then
+            # No run todavía: PENDING (bloquea)
+            state_icon="⏳"
+            status="PENDING"
+            conclusion="(no run)"
+            all_ok=0
+        else
+            IFS='|' read -r run_id status conclusion <<< "$meta"
+            conclusion="${conclusion:-}"
+
+            if [[ "$status" != "completed" ]]; then
+                state_icon="⏳"
+                status="${status:-IN_PROGRESS}"
+                conclusion="${conclusion:-}"
+                all_ok=0
+                # pick 2: IN_PROGRESS si no hay failure elegido
+                if [[ -z "${DEVTOOLS_GATE_SELECTED_RUN_ID:-}" ]]; then
+                    DEVTOOLS_GATE_SELECTED_RUN_ID="$run_id"
+                    DEVTOOLS_GATE_SELECTED_WORKFLOW="$wf"
+                    DEVTOOLS_GATE_SELECTED_REASON="in_progress"
+                fi
+            else
+                if [[ "$conclusion" == "success" ]]; then
+                    state_icon="✅"
+                    status="completed"
+                    conclusion="success"
+                else
+                    state_icon="❌"
+                    status="completed"
+                    conclusion="${conclusion:-unknown}"
+                    all_ok=0
+                    # pick 1: FAILURE siempre gana
+                    if [[ "${DEVTOOLS_GATE_SELECTED_REASON:-}" != "failure" ]]; then
+                        DEVTOOLS_GATE_SELECTED_RUN_ID="$run_id"
+                        DEVTOOLS_GATE_SELECTED_WORKFLOW="$wf"
+                        DEVTOOLS_GATE_SELECTED_REASON="failure"
+                    fi
+                fi
+            fi
+        fi
+
+        printf "│ %-29s │ %-12s │ %-13s\n" "$wf" "${state_icon} ${status}" "${conclusion}"
+    done
+
+    echo "└───────────────────────────────┴──────────────┴───────────────"
+
+    if [[ "$all_ok" -eq 1 ]]; then
+        log_success "✅ Gate OK (todos los workflows requeridos están SUCCESS para este SHA)."
+        return 0
+    fi
+
+    log_error "🚨 Gate ROJO (faltan runs o hay fallos para este SHA)."
+    if [[ -n "${DEVTOOLS_GATE_SELECTED_RUN_ID:-}" ]]; then
+        print_run_link "${DEVTOOLS_GATE_SELECTED_RUN_ID}" "watch candidate (${DEVTOOLS_GATE_SELECTED_WORKFLOW})"
+    fi
+    return 1
+}
+
+gate_watch_selected_run_if_any() {
+    # Usa el smart pick del gate. No aborta el proceso si falla.
+    [[ -n "${DEVTOOLS_GATE_SELECTED_RUN_ID:-}" ]] || return 0
+    is_tty || return 0
+    command -v gh >/dev/null 2>&1 || return 0
+
+    echo
+    log_info "📺 [AUTO-WATCH] ${DEVTOOLS_GATE_SELECTED_WORKFLOW} (reason=${DEVTOOLS_GATE_SELECTED_REASON})"
+    GH_PAGER=cat gh run watch "${DEVTOOLS_GATE_SELECTED_RUN_ID}" --exit-status 2>&1 || true
+    echo
+    return 0
 }
