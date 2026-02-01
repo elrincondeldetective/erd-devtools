@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # /webapps/erd-ecosystem/.devtools/lib/utils.sh
+set -u
 
 # ==============================================================================
 # 1. CONSTANTES Y COLORES
@@ -17,6 +18,25 @@ log_info()    { echo -e "${BLUE}ℹ️  $1${NC}"; }
 log_success() { echo -e "${GREEN}✅ $1${NC}"; }
 log_error()   { echo -e "${RED}❌ $1${NC}"; >&2; }
 log_warn()    { echo -e "${YELLOW}⚠️  $1${NC}"; }
+
+# ==============================================================================
+# 2.1 UI SHIMS (compatibilidad)
+# ------------------------------------------------------------------------------
+# Algunos scripts usan ui_* (ui_warn/ui_error/ui_header). Este repo usa log_*.
+# Para evitar "command not found", proveemos wrappers ligeros.
+# ==============================================================================
+ui_info()  { log_info "$1"; }
+ui_warn()  { log_warn "$1"; }
+ui_error() { log_error "$1"; }
+
+ui_header() {
+    local title="${1:-}"
+    echo
+    echo -e "${GREEN}════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN} ${title}${NC}"
+    echo -e "${GREEN}════════════════════════════════════════════════════${NC}"
+    echo
+}
 
 # Termina la ejecución con error (Exit code 1)
 die() {
