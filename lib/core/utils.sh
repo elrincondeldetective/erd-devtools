@@ -16,6 +16,7 @@ export NC='\033[0m' # No Color
 # ==============================================================================
 log_info()    { echo -e "${BLUE}ℹ️  $1${NC}"; }
 log_success() { echo -e "${GREEN}✅ $1${NC}"; }
+# [FIX] Redirección corregida: el mensaje va a stderr, no intentamos ejecutar stderr
 log_error()   { echo -e "${RED}❌ $1${NC}" >&2; }
 log_warn()    { echo -e "${YELLOW}⚠️  $1${NC}"; }
 
@@ -109,6 +110,7 @@ __ui_choose_one() {
 
     # Gum (visual)
     if have_gum_ui; then
+        # [FIX] Quitamos >/dev/tty para que stdout pueda ser capturado por variables
         gum choose --header "$title" "${options[@]}" </dev/tty
         return $?
     fi
@@ -179,7 +181,7 @@ ask_yes_no() {
     
     # 1. Si hay UI rica, usamos Gum
     if have_gum_ui; then 
-        gum confirm "$q" </dev/tty >/dev/tty
+        gum confirm "$q" </dev/tty
         return $?
     fi
     

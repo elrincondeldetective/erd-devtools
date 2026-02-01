@@ -55,7 +55,13 @@ ensure_repo_or_die() {
 ensure_clean_git() {
     # Si hay cambios sin commitear, fallamos.
     if [[ -n "$(git status --porcelain)" ]]; then
+        echo >&2
+        echo "🛑 WORKING TREE DIRTY" >&2
         echo "❌ Tienes cambios sin guardar (dirty working tree)." >&2
+        echo "💡 Solución rápida:" >&2
+        echo "   - Ver:    git status" >&2
+        echo "   - Guardar: git add -A && git commit -m \"...\"" >&2
+        echo "   - O stash: git stash -u" >&2
         exit 1
     fi
 }

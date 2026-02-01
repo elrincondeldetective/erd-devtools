@@ -7,6 +7,13 @@
 set -e
 
 # ==============================================================================
+# 0.0 DEFAULTS (set -u safe)
+# ==============================================================================
+# Si no está seteada, por defecto NO forzamos guard canónico extra
+export DEVTOOLS_FORCE_CANONICAL_REFS="${DEVTOOLS_FORCE_CANONICAL_REFS:-0}"
+export DEVTOOLS_SKIP_CANONICAL_CHECK="${DEVTOOLS_SKIP_CANONICAL_CHECK:-0}"
+
+# ==============================================================================
 # 0. BOOTSTRAP & CARGA DE LIBRERÍAS
 # ==============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -104,14 +111,6 @@ while [[ "$1" == -* ]]; do
 done
 
 TARGET_ENV="$1"
-echo "[DBG] RAW_ARG1=<$1>"
-python3 - <<"PY"
-import os,sys
-a=os.environ.get("TARGET_ENV","(env-missing)")
-print("[DBG] ENV TARGET_ENV:",repr(a),"bytes:"," ".join(f"{b:02x}" for b in a.encode()))
-argv=sys.argv
-print("[DBG] sys.argv:",[repr(x) for x in argv])
-PY
 
 # Validar argumento requerido
 if [[ -z "$TARGET_ENV" ]]; then
@@ -211,7 +210,7 @@ case "$TARGET_ENV" in
                 ;;
         esac
 
-        promote_dev_update_apply "${src_branch}"
+        promote_dev_update_squash "${src_branch}"
         ;;
 
     feature/*)
@@ -219,7 +218,7 @@ case "$TARGET_ENV" in
         source "${PROMOTE_LIB}/workflows/dev-update.sh"
         # En éxito: aterrizar en dev-update (rama promovida)
         export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="dev-update"
-        promote_dev_update_apply "$TARGET_ENV"
+        promote_dev_update_squash "$TARGET_ENV"
         ;;
 
     hotfix)
