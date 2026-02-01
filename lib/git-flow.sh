@@ -112,6 +112,11 @@ ensure_feature_branch_before_commit() {
   # Caso: Rama protegida (main, dev...) -> Migrar trabajo a nueva rama
   if is_protected_branch "$branch"; then
     local short_sha new_branch
+    
+    # Capturar upstream ANTES de movernos de rama (para limpiar bien la protegida)
+    local protected_upstream=""
+    protected_upstream="$(git rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>/dev/null || true)"
+
     short_sha="$(git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M%S)"
     # FIX: normalizar por seguridad (evita casos como "-c79fd03")
     short_sha="$(echo "$short_sha" | tr -cd '0-9a-f')"
@@ -120,16 +125,22 @@ ensure_feature_branch_before_commit() {
     # Creamos nombre único basado en la rama original
     new_branch="$(unique_branch_name "feature/$(sanitize_feature_suffix "${branch}-${short_sha}")")"
 
-    echo "🧹 Estás en rama protegida '$branch'. Moviendo el trabajo a '$new_branch' ANTES del commit..."
+    ui_header "🧹 Seguridad: Rama protegida detectada"
+    ui_warn "Estabas en '$branch' (protegida)."
+    ui_info "✅ Para evitar commits en ramas protegidas, tu trabajo se moverá a:"
+    ui_success "➡️  $new_branch"
+    echo
+
     git checkout -b "$new_branch"
     
-    # Intentamos restaurar la rama protegida al upstream para deshacer cambios locales en main/dev
-    local upstream=""
-    upstream="$(git rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>/dev/null || true)"
-    if [[ -n "$upstream" ]]; then
-        # Forzamos la rama protegida a coincidir con origin (limpieza)
-        git branch -f "$branch" "$upstream" >/dev/null 2>&1 || true
+    # Limpieza local de la rama protegida: alinearla a su upstream (solo puntero local)
+    if [[ -n "${protected_upstream:-}" ]]; then
+        git branch -f "$branch" "$protected_upstream" >/dev/null 2>&1 || true
+        ui_info "🧼 Rama protegida '$branch' alineada a '$protected_upstream' (solo local)."
+    else
+        ui_warn "No se detectó upstream para '$branch'. No se limpió el puntero local."
     fi
+    ui_info "📌 Tu commit se hará en '$new_branch'. No perdiste cambios."
     return 0
   fi
 
