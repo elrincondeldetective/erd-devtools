@@ -104,14 +104,6 @@ while [[ "$1" == -* ]]; do
 done
 
 TARGET_ENV="$1"
-echo "[DBG] RAW_ARG1=<$1>"
-python3 - <<"PY"
-import os,sys
-a=os.environ.get("TARGET_ENV","(env-missing)")
-print("[DBG] ENV TARGET_ENV:",repr(a),"bytes:"," ".join(f"{b:02x}" for b in a.encode()))
-argv=sys.argv
-print("[DBG] sys.argv:",[repr(x) for x in argv])
-PY
 
 # Validar argumento requerido
 if [[ -z "$TARGET_ENV" ]]; then
