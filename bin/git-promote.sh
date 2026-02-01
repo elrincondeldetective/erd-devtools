@@ -7,13 +7,6 @@
 set -e
 
 # ==============================================================================
-# 0.0 DEFAULTS (set -u safe)
-# ==============================================================================
-# Si no está seteada, por defecto NO forzamos guard canónico extra
-export DEVTOOLS_FORCE_CANONICAL_REFS="${DEVTOOLS_FORCE_CANONICAL_REFS:-0}"
-export DEVTOOLS_SKIP_CANONICAL_CHECK="${DEVTOOLS_SKIP_CANONICAL_CHECK:-0}"
-
-# ==============================================================================
 # 0. BOOTSTRAP & CARGA DE LIBRERÍAS
 # ==============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -35,79 +28,8 @@ if [[ -f "${PROMOTE_LIB}/workflows/common.sh" ]]; then
   source "${PROMOTE_LIB}/workflows/common.sh"
 fi
 
-# NOTA: Se ha eliminado la dependencia de golden-sha.sh para reducir fricción.
-# source "${PROMOTE_LIB}/golden-sha.sh"
-
 # ==============================================================================
-# 1. GUARDIA: TOOLSET CANÓNICO
-# ==============================================================================
-# Esto evita que desarrolladores ejecuten scripts desde una ubicación incorrecta
-# o desde una rama que no tiene las últimas herramientas.
-
-DEVTOOLS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-
-check_canonical_toolset() {
-    # Si el comando es doctor (diagnóstico), NO bloqueamos por toolset canónico.
-    # Debemos detectar el primer argumento no-flag.
-    local first_nonflag=""
-    local arg=""
-    for arg in "$@"; do
-        if [[ "$arg" == -* ]]; then
-            continue
-        fi
-        first_nonflag="$arg"
-        break
-    done
-    if [[ "${first_nonflag:-}" == "doctor" ]]; then
-        return 0
-    fi
-
-    # Definir ramas canónicas permitidas para ejecutar herramientas
-    # Ahora 'dev-update' es la norma, 'feature/dev-update' es legacy.
-    local DEVTOOLS_CANONICAL_REFS
-    local forced="${DEVTOOLS_FORCE_CANONICAL_REFS:-0}"
-    if [[ -n "${forced:-}" && "${forced:-0}" != "0" ]]; then
-        IFS=' ' read -r -a DEVTOOLS_CANONICAL_REFS <<< "$forced"
-    else
-        # Default refs
-        DEVTOOLS_CANONICAL_REFS=(dev dev-update)
-    fi
-
-    local current_branch
-    current_branch="$(git branch --show-current 2>/dev/null || echo "")"
-
-    # Si estamos en modo CI o con flag de skip, saltamos
-    if [[ "${DEVTOOLS_SKIP_CANONICAL_CHECK:-0}" == "1" ]]; then
-        return 0
-    fi
-
-    # Validar si la rama actual está en la lista permitida
-    local is_canonical=0
-    for ref in "${DEVTOOLS_CANONICAL_REFS[@]}"; do
-        if [[ "$current_branch" == "$ref" ]]; then
-            is_canonical=1
-            break
-        fi
-    done
-
-    if [[ "$is_canonical" -eq 0 ]]; then
-        ui_warn "Estás ejecutando devtools desde la rama '$current_branch'."
-        echo "   Por seguridad y consistencia, se recomienda ejecutar promociones"
-        echo "   desde una de las ramas canónicas de herramientas."
-        echo "   ✅ Recomendado: usar ${DEVTOOLS_CANONICAL_REFS[*]} (nota: feature/dev-update está deprecada)"
-        echo
-        
-        # Permitimos continuar si el usuario insiste, pero advertimos.
-        # En modo estricto, esto podría ser un exit 1.
-        ask_yes_no "⚠️  ¿Deseas continuar de todas formas bajo tu propio riesgo?" || exit 1
-    fi
-}
-
-# Ejecutar validación (pasando argumentos para detectar 'doctor')
-check_canonical_toolset "$@"
-
-# ==============================================================================
-# 1.1 CONTEXTO + LANDING TRAP (restaurar o aterrizar + borrar rama fuente)
+# 1. CONTEXTO + LANDING TRAP (restaurar o aterrizar + borrar rama fuente)
 # ==============================================================================
 export DEVTOOLS_PROMOTE_FROM_BRANCH="${DEVTOOLS_PROMOTE_FROM_BRANCH:-$(git branch --show-current 2>/dev/null || echo "")}"
 export DEVTOOLS_PROMOTE_FROM_BRANCH="$(echo "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}" | tr -d '[:space:]')"
@@ -126,18 +48,24 @@ cleanup_on_exit() {
         exit "$exit_code"
     fi
 
-    # ÉXITO: 1) preguntar borrado de rama fuente (solo aplica a feature/*)
+    # ÉXITO: aterrizar primero y luego preguntar borrado (para cumplir "quedarme en destino")
     if [[ "$exit_code" -eq 0 ]]; then
+        # 1) aterrizar en rama destino si aplica
+        if [[ -n "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH:-}" ]]; then
+            ui_info "🛬 Finalizando flujo (éxito): quedando en '${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}'..."
+            if ! git checkout "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}" >/dev/null 2>&1; then
+                # Intentar tracking si existe en origin
+                ensure_local_branch_tracks_remote "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}" "origin" >/dev/null 2>&1 || true
+                git checkout "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}" >/dev/null 2>&1 || true
+            fi
+        fi
+
+        # 2) preguntar borrado de rama origen (universal) si aplica
         if declare -F maybe_delete_source_branch >/dev/null 2>&1; then
             maybe_delete_source_branch "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}"
         fi
 
-        # ÉXITO: 2) aterrizar en la rama objetivo si está definida
-        if [[ -n "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH:-}" ]]; then
-            ui_info "🛬 Finalizando flujo (éxito): quedando en '${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}'..."
-            git checkout "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}" >/dev/null 2>&1 || true
-            exit 0
-        fi
+        exit 0
     fi
 
     # FALLO/CANCEL: restaurar rama inicial
