@@ -55,9 +55,14 @@ have_cmd() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Podemos interactuar aunque stdin/out no sean TTY si existe /dev/tty
+can_prompt() {
+    [[ -r /dev/tty && -w /dev/tty ]]
+}
+
 # Check centralizado para saber si podemos usar GUM (TTY + instalado)
 have_gum_ui() {
-    if is_tty && have_cmd gum; then
+    if have_cmd gum && can_prompt; then
         return 0
     else
         return 1
@@ -103,24 +108,25 @@ __ui_choose_one() {
 
     # Gum (visual)
     if have_gum_ui; then
-        gum choose --header "$title" "${options[@]}"
+        gum choose --header "$title" "${options[@]}" </dev/tty >/dev/tty
         return $?
     fi
 
     # Fallback TTY (numérico, simple)
-    if is_tty; then
-        echo
-        echo "$title"
-        echo
+    if can_prompt; then
+        echo > /dev/tty
+        echo "$title" > /dev/tty
+        echo > /dev/tty
         local i=1
         for opt in "${options[@]}"; do
-            echo "  $i) $opt"
+            echo "  $i) $opt" > /dev/tty
             i=$((i+1))
         done
-        echo
+        echo > /dev/tty
         local ans=""
         while true; do
-            read -r -p "Elige opción [1-${#options[@]}]: " ans < /dev/tty
+            printf "Elige opción [1-%s]: " "${#options[@]}" > /dev/tty
+            read -r ans < /dev/tty
             [[ "$ans" =~ ^[0-9]+$ ]] || { echo "Opción inválida."; continue; }
             (( ans >= 1 && ans <= ${#options[@]} )) || { echo "Fuera de rango."; continue; }
             echo "${options[$((ans-1))]}"
@@ -172,14 +178,15 @@ ask_yes_no() {
     
     # 1. Si hay UI rica, usamos Gum
     if have_gum_ui; then 
-        gum confirm "$q"
+        gum confirm "$q" </dev/tty >/dev/tty
         return $?
     fi
     
-    # 2. Si es TTY simple, usamos read
-    if is_tty; then 
+    # 2. Si podemos prompt (aunque stdin/out no sea tty), usamos /dev/tty
+    if can_prompt; then 
         local ans
-        read -r -p "$q [S/n]: " ans
+        printf "%s [S/n]: " "$q" > /dev/tty
+        read -r ans < /dev/tty
         ans="${ans:-S}"
         [[ "$ans" =~ ^[Ss]$ ]]
         return $?

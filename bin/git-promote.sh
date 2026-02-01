@@ -224,8 +224,15 @@ case "$TARGET_ENV" in
         ;;
 
     doctor)
-        source "${LIB_DIR}/checks/doctor.sh"
-        run_doctor
+        if [[ -f "${LIB_DIR}/checks/doctor.sh" ]]; then
+            source "${LIB_DIR}/checks/doctor.sh"
+            run_doctor
+        else
+            ui_header "🩺 devtools doctor"
+            ui_warn "No existe ${LIB_DIR}/checks/doctor.sh en este toolset."
+            ui_info "Nada que ejecutar. (Fallback seguro)"
+            exit 0
+        fi
         ;;
 
     *)
