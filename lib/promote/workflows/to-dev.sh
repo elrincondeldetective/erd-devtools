@@ -92,6 +92,16 @@ promote_to_dev() {
         die "No se pudo validar estado remoto de origin/dev."
     fi
 
+    # Monitor opcional por flag/env
+    local want_monitor="${GIT_PROMOTE_MONITOR:-${DEVTOOLS_PROMOTE_MONITOR:-0}}"
+    if [[ "${want_monitor}" == "1" ]]; then
+        if ! command -v gh >/dev/null 2>&1; then
+            die "Se requiere 'gh' para ejecutar el monitor (actívalo instalando gh o desactiva GIT_PROMOTE_MONITOR)."
+        fi
+        promote_dev_monitor "" ""
+        exit $?
+    fi
+
     log_success "DEV remoto OK. (Monitor desactivado por defecto)"
     exit 0
 }
