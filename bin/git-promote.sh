@@ -260,8 +260,22 @@ case "$TARGET_ENV" in
         # En éxito: aterrizar en dev-update (rama promovida)
         export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="dev-update"
         
-        # Si el usuario pasó un segundo argumento (ej: git promote dev-update mi-rama), lo usamos
-        promote_dev_update_squash "${2:-}"
+        # Si NO se pasó rama fuente, usamos la rama actual (DEVTOOLS_PROMOTE_FROM_BRANCH)
+        # Esto hace que: `git promote dev-update` (o `git promote feature/dev-update`) funcione sin sorpresas.
+        src_branch="${2:-}"
+        if [[ -z "${src_branch:-}" ]]; then
+            src_branch="${DEVTOOLS_PROMOTE_FROM_BRANCH:-}"
+            log_info "ℹ️  No se indicó rama fuente. Usando rama actual: ${src_branch}"
+        fi
+
+        # Guardias: evitar intentos absurdos (fuente inválida)
+        case "${src_branch:-}" in
+            ""|"(detached)"|dev-update|feature/dev-update|dev|main|staging|prod)
+                die "⛔ Rama fuente inválida para dev-update: '${src_branch}'. Usa: git promote dev-update feature/<rama>"
+                ;;
+        esac
+
+        promote_dev_update_squash "${src_branch}"
         ;;
 
     feature/*)
