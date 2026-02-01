@@ -154,8 +154,6 @@ promote_dev_update_squash() {
     
     log_success "✅ Te quedas en: ${canonical}"
 
-    # Limpieza contractual (prompt default Sí + local+remoto + guardias)
-    maybe_delete_source_branch "$source"
 
     return 0
 }
