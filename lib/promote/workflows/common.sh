@@ -111,7 +111,7 @@ maybe_delete_source_branch() {
 
     # 1. EXCEPCIONES CRÍTICAS: Nunca ofrecer borrar estas ramas
     case "$branch" in
-        main|dev|staging|master|feature/dev-update)
+        main|dev|staging|master|dev-update|feature/dev-update)
             log_info "📌 Rama fuente '$branch' es una excepción protegida. Manteniéndola."
             return 0
             ;;

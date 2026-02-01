@@ -102,6 +102,10 @@ ensure_feature_branch_before_commit() {
   
   # Si ya es feature, todo OK
   [[ "$branch" == feature/* ]] && return 0
+  # Permitimos rama de laboratorio (nuevo nombre canónico)
+  [[ "$branch" == "dev-update" ]] && return 0
+  # Compat (deprecado)
+  [[ "$branch" == "feature/dev-update" ]] && return 0
   [[ "$branch" == hotfix/* ]] && return 0 # Permitimos hotfix también
   [[ "$branch" == fix/* ]] && return 0    # Permitimos fix también
 

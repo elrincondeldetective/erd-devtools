@@ -220,6 +220,106 @@ force_update_branch_to_sha() {
 }
 
 # ==============================================================================
+# 4.2 PROMOCIÓN NO-DESTRUCTIVA POR ESTRATEGIA (FF / MERGE / THEIRS / FORCE)
+# ==============================================================================
+
+__git_is_ancestor() {
+    local a="$1" b="$2"
+    git merge-base --is-ancestor "$a" "$b" >/dev/null 2>&1
+}
+
+# Actualiza <branch> hacia <source_sha> aplicando estrategia.
+# Echo: SHA final en remoto (origin/<branch>) si OK.
+#
+# Estrategias:
+# - ff-only      : solo fast-forward (si no se puede, rc=3)
+# - merge        : merge --no-ff (preserva historial, crea commit)
+# - merge-theirs : merge --no-ff -X theirs (tu versión gana, preserva historial)
+# - force        : reset --hard + push --force-with-lease (destructivo)
+update_branch_to_sha_with_strategy() {
+    local branch="$1"
+    local source_sha="$2"
+    local remote="${3:-origin}"
+    local strategy="${4:-ff-only}"
+
+    [[ -n "${branch:-}" && -n "${source_sha:-}" ]] || return 2
+    ensure_clean_git
+
+    # refs frescas
+    git fetch "$remote" "$branch" >/dev/null 2>&1 || true
+    local old_remote_sha=""
+    old_remote_sha="$(git rev-parse "${remote}/${branch}" 2>/dev/null || true)"
+
+    case "$strategy" in
+        force)
+            force_update_branch_to_sha "$branch" "$source_sha" "$remote" || return 1
+            git fetch "$remote" "$branch" >/dev/null 2>&1 || true
+            echo "$(git rev-parse "${remote}/${branch}" 2>/dev/null || true)"
+            return 0
+            ;;
+        ff-only|merge|merge-theirs)
+            ;;
+        *)
+            echo "❌ Estrategia inválida: $strategy" >&2
+            return 2
+            ;;
+    esac
+
+    # Asegurar tracking local
+    ensure_local_branch_tracks_remote "$branch" "$remote" || {
+        echo "❌ No pude preparar la rama '$branch' desde '$remote/$branch'." >&2
+        return 1
+    }
+
+    # Base canónica: local == remote antes de actuar
+    git checkout "$branch" >/dev/null 2>&1 || return 1
+    git fetch "$remote" "$branch" >/dev/null 2>&1 || true
+    git reset --hard "${remote}/${branch}" >/dev/null 2>&1 || true
+
+    if [[ "$strategy" == "ff-only" ]]; then
+        # Solo FF si destino es ancestro del source
+        local base_sha
+        base_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+        if [[ -n "${base_sha:-}" ]] && ! __git_is_ancestor "$base_sha" "$source_sha"; then
+            echo "⚠️  Fast-Forward NO es posible: ${remote}/${branch} no es ancestro de source." >&2
+            return 3
+        fi
+        git merge --ff-only "$source_sha" >/dev/null 2>&1 || return 1
+    elif [[ "$strategy" == "merge" ]]; then
+        git merge --no-ff --no-edit "$source_sha" || return 1
+    elif [[ "$strategy" == "merge-theirs" ]]; then
+        git merge --no-ff --no-edit -X theirs "$source_sha" || return 1
+    fi
+
+    # Push NO destructivo
+    git push "$remote" "$branch" || return 1
+
+    # Verificación post-push
+    git fetch "$remote" "$branch" >/dev/null 2>&1 || true
+    local new_remote_sha=""
+    new_remote_sha="$(git rev-parse "${remote}/${branch}" 2>/dev/null || true)"
+
+    # Garantías mínimas:
+    # - merge/ff deben contener source_sha
+    # - merge debe preservar old_remote_sha (si existía)
+    if [[ -n "${new_remote_sha:-}" ]]; then
+        __git_is_ancestor "$source_sha" "$new_remote_sha" || {
+            echo "❌ Post-check falló: source_sha no quedó contenido en ${remote}/${branch}." >&2
+            return 1
+        }
+        if [[ "$strategy" != "ff-only" && -n "${old_remote_sha:-}" ]]; then
+            __git_is_ancestor "$old_remote_sha" "$new_remote_sha" || {
+                echo "❌ Post-check falló: historial previo no quedó preservado en merge." >&2
+                return 1
+            }
+        fi
+    fi
+
+    echo "$new_remote_sha"
+    return 0
+}
+
+# ==============================================================================
 # 5. DIAGNÓSTICO DE IDENTIDAD
 # ==============================================================================
 

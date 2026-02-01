@@ -81,7 +81,9 @@ promote_to_dev() {
     # --------------------------------------------------------------------------
     # Aplasta localmente (squash) feature -> dev, push directo a origin/dev
     if [[ "${DEVTOOLS_PROMOTE_DEV_DIRECT:-0}" == "1" ]]; then
-        [[ "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}" == "feature/dev-update" ]] || die "⛔ DEVTOOLS_PROMOTE_DEV_DIRECT=1 solo está permitido desde feature/dev-update."
+        [[ "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}" == "dev-update" ]] \
+            || [[ "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}" == "feature/dev-update" ]] \
+            || die "⛔ DEVTOOLS_PROMOTE_DEV_DIRECT=1 solo está permitido desde dev-update (feature/dev-update está deprecada)."
         # Función importada de strategies/dev-direct.sh
         promote_to_dev_direct
         exit $?

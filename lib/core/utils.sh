@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # /webapps/erd-ecosystem/.devtools/lib/utils.sh
+set -u
 
 # ==============================================================================
 # 1. CONSTANTES Y COLORES
@@ -73,6 +74,77 @@ try_cmd() {
 # ==============================================================================
 # 5. INTERACCIÓN CON EL USUARIO (UI)
 # ==============================================================================
+
+# 5.1 MENÚ VISUAL UNIVERSAL (PROMOTE STRATEGY)
+# ------------------------------------------------------------------------------
+
+__ui_choose_one() {
+    local title="$1"; shift
+    local options=("$@")
+
+    # Gum (visual)
+    if have_gum_ui; then
+        gum choose --header "$title" "${options[@]}"
+        return $?
+    fi
+
+    # Fallback TTY (numérico, simple)
+    if is_tty; then
+        echo
+        echo "$title"
+        echo
+        local i=1
+        for opt in "${options[@]}"; do
+            echo "  $i) $opt"
+            i=$((i+1))
+        done
+        echo
+        local ans=""
+        while true; do
+            read -r -p "Elige opción [1-${#options[@]}]: " ans < /dev/tty
+            [[ "$ans" =~ ^[0-9]+$ ]] || { echo "Opción inválida."; continue; }
+            (( ans >= 1 && ans <= ${#options[@]} )) || { echo "Fuera de rango."; continue; }
+            echo "${options[$((ans-1))]}"
+            return 0
+        done
+    fi
+
+    # No-tty: no decidimos por ti (sin sorpresas)
+    return 2
+}
+
+promote_choose_strategy_or_die() {
+    # Permite preconfigurar por entorno (ej. scripts), pero valida.
+    local preset="${DEVTOOLS_PROMOTE_STRATEGY:-}"
+    if [[ -n "${preset:-}" ]]; then
+        case "$preset" in
+            merge-theirs|ff-only|merge|force) echo "$preset"; return 0 ;;
+            *) die "DEVTOOLS_PROMOTE_STRATEGY inválida: '$preset' (usa: merge-theirs|ff-only|merge|force)";;
+        esac
+    fi
+
+    local title="🧯 MENÚ DE SEGURIDAD (Obligatorio) — Elige cómo actualizar ramas"
+    local o1="🛡️ Mi Versión Gana (Merge Forzado -X theirs)"
+    local o2="⏩ Solo mover puntero, opción segura (Fast-Forward)"
+    local o3="🔀 Crear commit de unión para conservar historial (Merge)"
+    local o4="☢️ Sobrescribir historia, opción destructiva (Force Update)"
+
+    local choice=""
+    choice="$(__ui_choose_one "$title" "$o1" "$o2" "$o3" "$o4")" || {
+        [[ "$?" == "2" ]] && die "No hay TTY/UI. Define DEVTOOLS_PROMOTE_STRATEGY=merge-theirs|ff-only|merge|force."
+        die "Cancelado."
+    }
+
+    case "$choice" in
+        "$o1") echo "merge-theirs" ;;
+        "$o2") echo "ff-only" ;;
+        "$o3") echo "merge" ;;
+        "$o4") echo "force" ;;
+        *) die "Selección desconocida." ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
 
 # Pregunta Sí/No robusta (soporta gum, fallback a read y modo CI)
 # Uso: ask_yes_no "¿Quieres continuar?"
