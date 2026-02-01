@@ -73,27 +73,25 @@ __resolve_promote_script() {
 # 3. PROMOTE TO DEV (Main Entry Point)
 # ==============================================================================
 promote_to_dev() {
-    # [FIX] Resync de submódulos antes de cualquier validación (ensure_clean_git)
     resync_submodules_hard
 
-    # --------------------------------------------------------------------------
     # ESTRATEGIA 1: Modo DIRECTO (sin PR feature->dev)
-    # --------------------------------------------------------------------------
-    # Aplasta localmente (squash) feature -> dev, push directo a origin/dev
     if [[ "${DEVTOOLS_PROMOTE_DEV_DIRECT:-0}" == "1" ]]; then
         [[ "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}" == "dev-update" ]] \
             || [[ "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}" == "feature/dev-update" ]] \
             || die "⛔ DEVTOOLS_PROMOTE_DEV_DIRECT=1 solo está permitido desde dev-update (feature/dev-update está deprecada)."
-        # Función importada de strategies/dev-direct.sh
+
+        # (se mantiene igual)
         promote_to_dev_direct
         exit $?
     fi
-    # Nuevo contrato: git promote dev = monitor/admin (NO crea PR)
-    if ! command -v gh >/dev/null 2>&1; then
-        log_error "Se requiere 'gh' para monitorear estado de DEV (policía estricto)."
-        exit 1
+
+    # NUEVO: chequeo remoto rápido (reemplaza monitor por defecto)
+    log_info "🔎 Chequeo remoto contra GitHub (sin monitor): origin/dev"
+    if ! remote_health_check "dev" "origin"; then
+        die "No se pudo validar estado remoto de origin/dev."
     fi
 
-    promote_dev_monitor "" ""
-    exit $?
+    log_success "DEV remoto OK. (Monitor desactivado por defecto)"
+    exit 0
 }

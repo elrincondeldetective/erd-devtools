@@ -326,6 +326,46 @@ update_branch_to_sha_with_strategy() {
 }
 
 # ==============================================================================
+# 4.3 CHEQUEO REMOTO (GitHub/Origin Health)
+# ==============================================================================
+# Verifica conectividad + existencia de ref remota usando git (sin gh).
+# Uso: remote_health_check <branch> [remote]
+remote_health_check() {
+    local branch="$1"
+    local remote="${2:-origin}"
+
+    [[ -n "${branch:-}" ]] || { echo "❌ remote_health_check: branch vacío" >&2; return 2; }
+
+    local out rc
+    if declare -F try_cmd >/dev/null 2>&1; then
+        out="$(try_cmd git ls-remote --exit-code --heads "$remote" "$branch" 2>/dev/null)"
+        rc=$?
+    else
+        out="$(git ls-remote --exit-code --heads "$remote" "$branch" 2>/dev/null)"
+        rc=$?
+    fi
+
+    if [[ "$rc" -ne 0 || -z "${out:-}" ]]; then
+        if declare -F log_error >/dev/null 2>&1; then
+            log_error "GitHub no accesible o ref no encontrada: ${remote}/${branch}"
+        else
+            echo "❌ GitHub no accesible o ref no encontrada: ${remote}/${branch}" >&2
+        fi
+        return 1
+    fi
+
+    local sha
+    sha="$(echo "$out" | awk '{print $1}' | head -n 1)"
+    if declare -F log_success >/dev/null 2>&1; then
+        log_success "GitHub accesible: ${remote}/${branch} @${sha:0:7}"
+    else
+        echo "✅ GitHub accesible: ${remote}/${branch} @${sha:0:7}"
+    fi
+    return 0
+}
+
+
+# ==============================================================================
 # 5. DIAGNÓSTICO DE IDENTIDAD
 # ==============================================================================
 
