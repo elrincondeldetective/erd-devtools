@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # /webapps/erd-ecosystem/.devtools/lib/utils.sh
-set -u
 
 # ==============================================================================
 # 1. CONSTANTES Y COLORES
