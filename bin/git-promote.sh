@@ -198,12 +198,12 @@ case "$TARGET_ENV" in
 
         # Guardias: evitar intentos absurdos (fuente inválida)
         case "${src_branch:-}" in
-            ""|"(detached)"|dev-update|feature/dev-update|dev|main|staging|prod)
+            ""|"(detached)"|dev-update|dev|main|staging|prod)
                 die "⛔ Rama fuente inválida para dev-update: '${src_branch}'. Usa: git promote dev-update feature/<rama>"
                 ;;
         esac
 
-        promote_dev_update_squash "${src_branch}"
+        promote_dev_update_apply "${src_branch}"
         ;;
 
     feature/*)
@@ -211,7 +211,7 @@ case "$TARGET_ENV" in
         source "${PROMOTE_LIB}/workflows/dev-update.sh"
         # En éxito: aterrizar en dev-update (rama promovida)
         export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="dev-update"
-        promote_dev_update_squash "$TARGET_ENV"
+        promote_dev_update_apply "$TARGET_ENV"
         ;;
 
     hotfix)
@@ -225,8 +225,15 @@ case "$TARGET_ENV" in
         ;;
 
     *)
-        ui_error "Target no reconocido: $TARGET_ENV"
-        exit 1
+        # Si es una rama (local o remota), la tratamos como fuente hacia dev-update (flujo único).
+        if git show-ref --verify --quiet "refs/heads/${TARGET_ENV}" || git show-ref --verify --quiet "refs/remotes/origin/${TARGET_ENV}"; then
+            source "${PROMOTE_LIB}/workflows/dev-update.sh"
+            export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="dev-update"
+            promote_dev_update_apply "${TARGET_ENV}"
+        else
+            ui_error "Target no reconocido: $TARGET_ENV"
+            exit 1
+        fi
         ;;
 esac
 
