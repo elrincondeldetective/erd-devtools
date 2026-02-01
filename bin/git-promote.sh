@@ -29,6 +29,12 @@ PROMOTE_LIB="${LIB_DIR}/promote"
 # Cargar estrategias de versión
 source "${PROMOTE_LIB}/version-strategy.sh"
 
+# Helpers comunes (incluye maybe_delete_source_branch)
+# Nota: es seguro cargarlo aquí; usa log_* / ask_yes_no ya disponibles.
+if [[ -f "${PROMOTE_LIB}/workflows/common.sh" ]]; then
+  source "${PROMOTE_LIB}/workflows/common.sh"
+fi
+
 # NOTA: Se ha eliminado la dependencia de golden-sha.sh para reducir fricción.
 # source "${PROMOTE_LIB}/golden-sha.sh"
 
@@ -99,6 +105,53 @@ check_canonical_toolset() {
 
 # Ejecutar validación (pasando argumentos para detectar 'doctor')
 check_canonical_toolset "$@"
+
+# ==============================================================================
+# 1.1 CONTEXTO + LANDING TRAP (restaurar o aterrizar + borrar rama fuente)
+# ==============================================================================
+export DEVTOOLS_PROMOTE_FROM_BRANCH="${DEVTOOLS_PROMOTE_FROM_BRANCH:-$(git branch --show-current 2>/dev/null || echo "")}"
+export DEVTOOLS_PROMOTE_FROM_BRANCH="$(echo "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}" | tr -d '[:space:]')"
+[[ -n "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}" ]] || export DEVTOOLS_PROMOTE_FROM_BRANCH="(detached)"
+export DEVTOOLS_PROMOTE_FROM_SHA="${DEVTOOLS_PROMOTE_FROM_SHA:-$(git rev-parse HEAD 2>/dev/null || true)}"
+
+# Landing override (vacío = restaurar rama original)
+export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="${DEVTOOLS_LAND_ON_SUCCESS_BRANCH:-}"
+
+cleanup_on_exit() {
+    local exit_code=$?
+    trap - EXIT INT TERM
+
+    # Doctor no debe intentar borrar ramas ni aterrizar raro
+    if [[ "${TARGET_ENV:-}" == "doctor" ]]; then
+        exit "$exit_code"
+    fi
+
+    # ÉXITO: 1) preguntar borrado de rama fuente (solo aplica a feature/*)
+    if [[ "$exit_code" -eq 0 ]]; then
+        if declare -F maybe_delete_source_branch >/dev/null 2>&1; then
+            maybe_delete_source_branch "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}"
+        fi
+
+        # ÉXITO: 2) aterrizar en la rama objetivo si está definida
+        if [[ -n "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH:-}" ]]; then
+            ui_info "🛬 Finalizando flujo (éxito): quedando en '${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}'..."
+            git checkout "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}" >/dev/null 2>&1 || true
+            exit 0
+        fi
+    fi
+
+    # FALLO/CANCEL: restaurar rama inicial
+    if declare -F git_restore_branch_safely >/dev/null 2>&1; then
+        git_restore_branch_safely "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}"
+    else
+        ui_warn "Finalizando script. Volviendo a ${DEVTOOLS_PROMOTE_FROM_BRANCH:-}..."
+        git checkout "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}" >/dev/null 2>&1 || true
+    fi
+
+    exit "$exit_code"
+}
+
+trap 'cleanup_on_exit' EXIT INT TERM
 
 # ==============================================================================
 # 2. PARSEO DE ARGUMENTOS
@@ -204,7 +257,7 @@ case "$TARGET_ENV" in
         # Cargar módulo dev-update (asumimos que existe o está en to-dev utils)
         source "${PROMOTE_LIB}/workflows/dev-update.sh"
         
-        # Permite pasar una rama opcional como segundo argumento
+        # En éxito: aterrizar en dev-update (rama promovida)
         export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="dev-update"
         
         # Si el usuario pasó un segundo argumento (ej: git promote dev-update mi-rama), lo usamos
@@ -214,6 +267,7 @@ case "$TARGET_ENV" in
     feature/*)
         # Alias directo para squashear una feature
         source "${PROMOTE_LIB}/workflows/dev-update.sh"
+        # En éxito: aterrizar en dev-update (rama promovida)
         export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="dev-update"
         promote_dev_update_squash "$TARGET_ENV"
         ;;
@@ -224,15 +278,8 @@ case "$TARGET_ENV" in
         ;;
 
     doctor)
-        if [[ -f "${LIB_DIR}/checks/doctor.sh" ]]; then
-            source "${LIB_DIR}/checks/doctor.sh"
-            run_doctor
-        else
-            ui_header "🩺 devtools doctor"
-            ui_warn "No existe ${LIB_DIR}/checks/doctor.sh en este toolset."
-            ui_info "Nada que ejecutar. (Fallback seguro)"
-            exit 0
-        fi
+        source "${LIB_DIR}/checks/doctor.sh"
+        run_doctor
         ;;
 
     *)

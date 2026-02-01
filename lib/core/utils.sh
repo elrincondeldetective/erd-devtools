@@ -28,6 +28,7 @@ log_warn()    { echo -e "${YELLOW}⚠️  $1${NC}"; }
 ui_info()  { log_info "$1"; }
 ui_warn()  { log_warn "$1"; }
 ui_error() { log_error "$1"; }
+ui_success() { log_success "$1"; }
 
 ui_header() {
     local title="${1:-}"
