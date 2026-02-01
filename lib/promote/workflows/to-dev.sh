@@ -75,6 +75,9 @@ __resolve_promote_script() {
 promote_to_dev() {
     resync_submodules_hard
 
+    # NUEVO: garantizar aterrizaje final en DEV (lo ejecuta el trap del bin principal)
+    export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="dev"
+
     # ESTRATEGIA 1: Modo DIRECTO (sin PR feature->dev)
     if [[ "${DEVTOOLS_PROMOTE_DEV_DIRECT:-0}" == "1" ]]; then
         [[ "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}" == "dev-update" ]] \
@@ -91,6 +94,48 @@ promote_to_dev() {
     if ! remote_health_check "dev" "origin"; then
         die "No se pudo validar estado remoto de origin/dev."
     fi
+
+    # NUEVO: Integración real hacia dev usando la estrategia del Menú Universal
+    # Fuente: rama donde se invocó el comando (capturada por el bin principal)
+    local source_branch="${DEVTOOLS_PROMOTE_FROM_BRANCH:-}"
+    if [[ -z "${source_branch:-}" || "${source_branch:-}" == "(detached)" ]]; then
+        source_branch="$(git branch --show-current 2>/dev/null || echo "")"
+    fi
+    source_branch="$(echo "${source_branch:-}" | tr -d '[:space:]')"
+    [[ -n "${source_branch:-}" ]] || die "No pude detectar rama fuente para promover a dev."
+
+    # SHA fuente: preferimos el snapshot capturado por el bin (antes de cambiar de rama)
+    local source_sha="${DEVTOOLS_PROMOTE_FROM_SHA:-}"
+    if [[ -z "${source_sha:-}" ]]; then
+        source_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+    fi
+    [[ -n "${source_sha:-}" ]] || die "No pude resolver SHA fuente."
+
+    echo
+    log_info "🧩 PROMOCIÓN HACIA 'dev' (sin monitor, con estrategia)"
+    log_info "    Fuente : ${source_branch} @${source_sha:0:7}"
+    log_info "    Destino: dev"
+    echo
+
+    # Estrategia (Menú Universal): el bin la setea siempre, pero dejamos fallback seguro.
+    local strategy="${DEVTOOLS_PROMOTE_STRATEGY:-}"
+    [[ -n "${strategy:-}" ]] || strategy="ff-only"
+
+    local final_sha="" rc=0
+    while true; do
+        final_sha="$(update_branch_to_sha_with_strategy "dev" "$source_sha" "origin" "$strategy")"
+        rc=$?
+        if [[ "$rc" -eq 3 ]]; then
+            log_warn "⚠️ Fast-Forward NO es posible. Elige otra estrategia."
+            strategy="$(promote_choose_strategy_or_die)"
+            export DEVTOOLS_PROMOTE_STRATEGY="$strategy"
+            continue
+        fi
+        [[ "$rc" -eq 0 ]] || die "No pude promover hacia 'dev' (strategy=${strategy}, rc=${rc})."
+        break
+    done
+
+    log_success "✅ Promoción OK: ${source_branch} -> dev (strategy=${strategy}, sha=${final_sha:0:7})"
 
     # Monitor opcional por flag/env
     local want_monitor="${GIT_PROMOTE_MONITOR:-${DEVTOOLS_PROMOTE_MONITOR:-0}}"
