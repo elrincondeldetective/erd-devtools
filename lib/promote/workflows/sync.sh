@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # /webapps/erd-ecosystem/.devtools/lib/promote/workflows/sync.sh
 #
-# Este módulo maneja SYNC como MACRO ESTRICTO (sin backdoors):
-# - promote_sync_all: Ejecuta la cadena de confianza completa:
-#   1) Lab -> DEV (modo directo/aplastante, hardcoded dev-update)
-#   2) DEV -> STAGING (Golden SHA estricto + waits)
-#   3) STAGING -> PROD (Golden SHA estricto + waits + release)
-#
+# Este módulo maneja SYNC como macro simple:
+# - promote_sync_all: ejecuta dev-update -> dev -> staging -> prod (minimalista)
+# - Sin waits, sin tags, sin gitops, sin gh.
 # Dependencias: utils.sh, git-ops.sh, y módulos de promote (cargados por workflows.sh)
 
 # ==============================================================================
 # 1. SYNC MACRO (estricto)
 # ==============================================================================
+# Dynamic imports (para que `git promote sync` funcione aunque se sourcee solo este archivo)
+__SYNC_DIR__="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${__SYNC_DIR__}/to-dev.sh"
+source "${__SYNC_DIR__}/to-staging.sh"
+source "${__SYNC_DIR__}/to-prod.sh"
 promote_sync_all() {
     local current_branch
     current_branch="$(git branch --show-current 2>/dev/null || echo "")"
@@ -40,9 +42,8 @@ promote_sync_all() {
 
     log_info "1/3 🧨 DEV (Lab -> Source of Truth)"
     # Ejecutamos en subshell para aislar variables exportadas, aunque en este caso
-    # queremos que el GOLDEN_SHA persista, pero como promote_to_dev lo escribe en disco/memoria
-    # global (si usara vars globales), está bien.
-    # El uso de parentesis ( ) crea subshell, pero necesitamos que si falla, paremos.
+    # Ejecutamos cada paso en subshell para aislar side-effects y permitir `exit` internos.
+
     (
         export DEVTOOLS_PROMOTE_DEV_DIRECT=1
         promote_to_dev
@@ -50,12 +51,12 @@ promote_sync_all() {
     rc=$?
     [[ "$rc" -eq 0 ]] || { log_error "❌ Sync abortado: falló DEV (rc=$rc)."; return "$rc"; }
 
-    log_info "2/3 🏷️ STAGING (Golden SHA + waits + release)"
+    log_info "2/3 🚀 STAGING"
     ( promote_to_staging )
     rc=$?
     [[ "$rc" -eq 0 ]] || { log_error "❌ Sync abortado: falló STAGING (rc=$rc)."; return "$rc"; }
 
-    log_info "3/3 🚀 PROD (Golden SHA + waits + release)"
+    log_info "3/3 🚀 PROD"
     ( promote_to_prod )
     rc=$?
     [[ "$rc" -eq 0 ]] || { log_error "❌ Sync abortado: falló PROD (rc=$rc)."; return "$rc"; }
