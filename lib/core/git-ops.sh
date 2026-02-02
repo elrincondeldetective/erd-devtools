@@ -453,3 +453,43 @@ git_restore_branch_safely() {
         echo "📍 Te has quedado en: ${current:-detached HEAD}" >&2
     fi
 }
+
+git_remote_url() {
+    local remote="${1:-origin}"
+    git remote get-url "$remote" 2>/dev/null || git config --get "remote.${remote}.url" 2>/dev/null || true
+}
+
+__extract_host_from_git_url() {
+    local url="$1"
+    # normalizar protocolos
+    url="${url#ssh://}"
+    url="${url#https://}"
+    url="${url#http://}"
+    # quitar user@ si existe
+    [[ "$url" == *@* ]] && url="${url#*@}"
+    # host hasta ':' o '/'
+    echo "${url%%[:/]*}"
+}
+
+ensure_origin_is_github_com_or_die() {
+    local url host
+    url="$(git_remote_url origin)"
+    if [[ -z "${url:-}" ]]; then
+        if declare -F die >/dev/null 2>&1; then
+        die "❌ Error: no existe el remoto 'origin'. Configúralo antes de promover."
+        fi
+        echo "❌ Error: no existe el remoto 'origin'." >&2
+        exit 1
+    fi
+
+    host="$(__extract_host_from_git_url "$url")"
+    if [[ "$host" != "github.com" ]]; then
+        echo >&2
+        echo "❌ Error: tu remoto 'origin' no apunta a github.com." >&2
+        echo "   URL actual: $url" >&2
+        echo "💡 Arreglo rápido (ejemplo):" >&2
+        echo "   git remote set-url origin git@github.com:OWNER/REPO.git" >&2
+        echo >&2
+        exit 1
+    fi
+}

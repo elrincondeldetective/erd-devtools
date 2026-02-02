@@ -32,7 +32,7 @@ source "${PROMOTE_LIB}/version-strategy.sh"
 # Helpers comunes (incluye maybe_delete_source_branch)
 # Nota: es seguro cargarlo aquí; usa log_* / ask_yes_no ya disponibles.
 if [[ -f "${PROMOTE_LIB}/workflows/common.sh" ]]; then
-  source "${PROMOTE_LIB}/workflows/common.sh"
+    source "${PROMOTE_LIB}/workflows/common.sh"
 fi
 
 # ==============================================================================
@@ -129,17 +129,32 @@ if [[ -z "$TARGET_ENV" ]]; then
 fi
 
 # ==============================================================================
-# 3. MENÚ DE SEGURIDAD UNIVERSAL (OBLIGATORIO)
+# 3. PRE-FLIGHT DE SEGURIDAD (OBLIGATORIO) + MENÚ UNIVERSAL (OBLIGATORIO)
 # ==============================================================================
-# Regla: "Ante la duda, pregunta".
-# Este menú aparece SIEMPRE (excepto en doctor/diagnóstico), obligando a elegir
-# entre Fast-Forward, Merge o Force.
-# Esto define la variable DEVTOOLS_PROMOTE_STRATEGY que usarán los workflows.
+# Regla: "Primero seguridad, luego el menú".
+# Este bloque corre SIEMPRE (excepto en doctor/diagnóstico) antes de tocar ramas.
+# - Valida que estamos en un repo.
+# - Valida que origin existe y apunta a github.com.
+# - (Opcional/recomendado) hace fetch estricto para no operar con refs viejas.
+# Luego muestra el 🧯 MENÚ DE SEGURIDAD y define DEVTOOLS_PROMOTE_STRATEGY.
 
 if [[ "${TARGET_ENV:-}" != "doctor" ]]; then
+    # --------------------------------------------------------------------------
+    # 3.1 PRE-FLIGHT (SEGURIDAD PRIMERO)
+    # --------------------------------------------------------------------------
+    ensure_repo_or_die
+    ensure_origin_is_github_com_or_die
+
+    # Fetch estricto (si falla red/credenciales, aborta)
+    # Nota: sin "|| true" a propósito.
+    git fetch origin --prune
+
+    # --------------------------------------------------------------------------
+    # 3.2 MENÚ DE SEGURIDAD UNIVERSAL (OBLIGATORIO)
+    # --------------------------------------------------------------------------
     export DEVTOOLS_PROMOTE_STRATEGY
-    
-    # Función definida en lib/core/utils.sh que muestra el menú A/B/C con emojis
+
+    # Función definida en lib/core/utils.sh que muestra el menú con emojis
     DEVTOOLS_PROMOTE_STRATEGY="$(promote_choose_strategy_or_die)"
 
     # Confirmación extra para la opción ☢️ (Solo si no estamos en modo --yes)
@@ -150,12 +165,13 @@ if [[ "${TARGET_ENV:-}" != "doctor" ]]; then
             die "Abortado por seguridad."
         fi
     fi
-    
+
     # Feedback visual de la elección
     if [[ "${DEVTOOLS_ASSUME_YES:-0}" != "1" ]]; then
         log_info "✅ Estrategia seleccionada: $DEVTOOLS_PROMOTE_STRATEGY"
     fi
 fi
+
 
 # ==============================================================================
 # 4. ENRUTAMIENTO (Router)
