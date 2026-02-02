@@ -117,6 +117,29 @@ ensure_local_branch_tracks_remote() {
     return 1
 }
 
+# ------------------------------------------------------------------------------
+# COMPAT: nombre antiguo usado por workflows legacy
+# - Prepara una rama local con tracking al remoto SIN mover la rama actual.
+# Uso: ensure_local_tracking_branch <branch> [remote]
+ensure_local_tracking_branch() {
+    local branch="$1"
+    local remote="${2:-origin}"
+
+    [[ -n "${branch:-}" ]] || return 2
+
+    local cur
+    cur="$(git branch --show-current 2>/dev/null || echo "")"
+
+    ensure_local_branch_tracks_remote "$branch" "$remote" || return 1
+
+    # Volver a la rama original (evita side-effects en callers)
+    if [[ -n "${cur:-}" && "$cur" != "$branch" ]]; then
+        git checkout "$cur" >/dev/null 2>&1 || true
+    fi
+
+    return 0
+}
+
 # Sincroniza la rama local para que coincida EXACTAMENTE con el remoto (golden truth)
 sync_branch_hard_to_remote() {
     local branch="$1"
