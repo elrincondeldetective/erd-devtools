@@ -3,6 +3,16 @@
 ## [Unreleased]
 
 ### Features
+- **git-promote:** preflight obligatorio (repo, `origin` en `github.com`, `fetch` estricto) antes del menú.
+- **git-promote:** menú de seguridad obligatorio estandariza estrategias: `ff-only|merge|merge-theirs|force`.
+- **git-promote(sync):** modo directo ahora es opt-in vía `DEVTOOLS_SYNC_DEV_DIRECT=1`.
+- **git-promote(hotfix):** flujo estandarizado (entrypoint compatible + estrategias del menú) para actualizar `main` y `dev`.
+
+### Bug Fixes
+- **git-promote:** soporte de alias SSH para `origin` si resuelve a `HostName github.com`.
+- **git-promote(dev-monitor):** force update migra a `update_branch_to_sha_with_strategy` (force-with-lease + verificación).
+
+### Features
 - **git-promote(dev):** modo monitor “policía estricto” para PRs hacia `dev` (CI+review+mergeable) con bypass `DEVTOOLS_BYPASS_STRICT=1`.
 - **git-promote:** política de aterrizaje por comando (override): `dev` cae en `dev` al salir; `feature/dev-update` cae en `feature/dev-update` en éxito.
 
