@@ -42,9 +42,8 @@ ensure_clean_git_or_die() { :; }
 repo_has_workflow_file() { return 1; } # Retornar falso por defecto
 
 # GitOps / Writes
-write_golden_sha() { :; }
 maybe_trigger_gitops_update() { :; }
-resolve_golden_sha_file() { echo ".last_golden_sha"; }
+
 
 # GH Placeholders (por si se invocaran, aunque solo probamos carga)
 wait_for_pr_merge_and_get_sha() { echo "mock_sha_123"; }

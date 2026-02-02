@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # /webapps/erd-ecosystem/.devtools/lib/utils.sh
+set -u
 
 # ==============================================================================
 # 1. CONSTANTES Y COLORES
@@ -15,8 +16,29 @@ export NC='\033[0m' # No Color
 # ==============================================================================
 log_info()    { echo -e "${BLUE}ℹ️  $1${NC}"; }
 log_success() { echo -e "${GREEN}✅ $1${NC}"; }
-log_error()   { echo -e "${RED}❌ $1${NC}"; >&2; }
+# [FIX] Redirección corregida: el mensaje va a stderr, no intentamos ejecutar stderr
+log_error()   { echo -e "${RED}❌ $1${NC}" >&2; }
 log_warn()    { echo -e "${YELLOW}⚠️  $1${NC}"; }
+
+# ==============================================================================
+# 2.1 UI SHIMS (compatibilidad)
+# ------------------------------------------------------------------------------
+# Algunos scripts usan ui_* (ui_warn/ui_error/ui_header). Este repo usa log_*.
+# Para evitar "command not found", proveemos wrappers ligeros.
+# ==============================================================================
+ui_info()  { log_info "$1"; }
+ui_warn()  { log_warn "$1"; }
+ui_error() { log_error "$1"; }
+ui_success() { log_success "$1"; }
+
+ui_header() {
+    local title="${1:-}"
+    echo
+    echo -e "${GREEN}════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN} ${title}${NC}"
+    echo -e "${GREEN}════════════════════════════════════════════════════${NC}"
+    echo
+}
 
 # Termina la ejecución con error (Exit code 1)
 die() {
@@ -35,9 +57,14 @@ have_cmd() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Podemos interactuar aunque stdin/out no sean TTY si existe /dev/tty
+can_prompt() {
+    [[ -r /dev/tty && -w /dev/tty ]]
+}
+
 # Check centralizado para saber si podemos usar GUM (TTY + instalado)
 have_gum_ui() {
-    if is_tty && have_cmd gum; then
+    if have_cmd gum && can_prompt; then
         return 0
     else
         return 1
@@ -74,6 +101,79 @@ try_cmd() {
 # 5. INTERACCIÓN CON EL USUARIO (UI)
 # ==============================================================================
 
+# 5.1 MENÚ VISUAL UNIVERSAL (PROMOTE STRATEGY)
+# ------------------------------------------------------------------------------
+
+__ui_choose_one() {
+    local title="$1"; shift
+    local options=("$@")
+
+    # Gum (visual)
+    if have_gum_ui; then
+        # [FIX] Quitamos >/dev/tty para que stdout pueda ser capturado por variables
+        gum choose --header "$title" "${options[@]}" </dev/tty
+        return $?
+    fi
+
+    # Fallback TTY (numérico, simple)
+    if can_prompt; then
+        echo > /dev/tty
+        echo "$title" > /dev/tty
+        echo > /dev/tty
+        local i=1
+        for opt in "${options[@]}"; do
+            echo "  $i) $opt" > /dev/tty
+            i=$((i+1))
+        done
+        echo > /dev/tty
+        local ans=""
+        while true; do
+            printf "Elige opción [1-%s]: " "${#options[@]}" > /dev/tty
+            read -r ans < /dev/tty
+            [[ "$ans" =~ ^[0-9]+$ ]] || { echo "Opción inválida."; continue; }
+            (( ans >= 1 && ans <= ${#options[@]} )) || { echo "Fuera de rango."; continue; }
+            echo "${options[$((ans-1))]}"
+            return 0
+        done
+    fi
+
+    # No-tty: no decidimos por ti (sin sorpresas)
+    return 2
+}
+
+promote_choose_strategy_or_die() {
+    # Permite preconfigurar por entorno (ej. scripts), pero valida.
+    local preset="${DEVTOOLS_PROMOTE_STRATEGY:-}"
+    if [[ -n "${preset:-}" ]]; then
+        case "$preset" in
+            merge-theirs|ff-only|merge|force) echo "$preset"; return 0 ;;
+            *) die "DEVTOOLS_PROMOTE_STRATEGY inválida: '$preset' (usa: merge-theirs|ff-only|merge|force)";;
+        esac
+    fi
+
+    local title="🧯 MENÚ DE SEGURIDAD (Obligatorio) — Elige cómo actualizar ramas"
+    local o1="🛡️ Mi Versión Gana (Merge Forzado -X theirs)"
+    local o2="⏩ Solo mover puntero, opción segura (Fast-Forward)"
+    local o3="🔀 Crear commit de unión para conservar historial (Merge)"
+    local o4="☢️ Sobrescribir historia, opción destructiva (Force Update)"
+
+    local choice=""
+    choice="$(__ui_choose_one "$title" "$o1" "$o2" "$o3" "$o4")" || {
+        [[ "$?" == "2" ]] && die "No hay TTY/UI. Define DEVTOOLS_PROMOTE_STRATEGY=merge-theirs|ff-only|merge|force."
+        die "Cancelado."
+    }
+
+    case "$choice" in
+        "$o1") echo "merge-theirs" ;;
+        "$o2") echo "ff-only" ;;
+        "$o3") echo "merge" ;;
+        "$o4") echo "force" ;;
+        *) die "Selección desconocida." ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+
 # Pregunta Sí/No robusta (soporta gum, fallback a read y modo CI)
 # Uso: ask_yes_no "¿Quieres continuar?"
 ask_yes_no() {
@@ -81,14 +181,15 @@ ask_yes_no() {
     
     # 1. Si hay UI rica, usamos Gum
     if have_gum_ui; then 
-        gum confirm "$q"
+        gum confirm "$q" </dev/tty
         return $?
     fi
     
-    # 2. Si es TTY simple, usamos read
-    if is_tty; then 
+    # 2. Si podemos prompt (aunque stdin/out no sea tty), usamos /dev/tty
+    if can_prompt; then 
         local ans
-        read -r -p "$q [S/n]: " ans
+        printf "%s [S/n]: " "$q" > /dev/tty
+        read -r ans < /dev/tty
         ans="${ans:-S}"
         [[ "$ans" =~ ^[Ss]$ ]]
         return $?
