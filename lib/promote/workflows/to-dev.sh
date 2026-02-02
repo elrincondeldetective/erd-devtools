@@ -89,13 +89,6 @@ promote_to_dev() {
         exit $?
     fi
 
-    # NUEVO: chequeo remoto rápido (reemplaza monitor por defecto)
-    log_info "🔎 Chequeo remoto contra GitHub (sin monitor): origin/dev"
-    if ! remote_health_check "dev" "origin"; then
-        die "No se pudo validar estado remoto de origin/dev."
-    fi
-
-    # NUEVO: Integración real hacia dev usando la estrategia del Menú Universal
     # Fuente: rama donde se invocó el comando (capturada por el bin principal)
     local source_branch="${DEVTOOLS_PROMOTE_FROM_BRANCH:-}"
     if [[ -z "${source_branch:-}" || "${source_branch:-}" == "(detached)" ]]; then
@@ -112,7 +105,7 @@ promote_to_dev() {
     [[ -n "${source_sha:-}" ]] || die "No pude resolver SHA fuente."
 
     echo
-    log_info "🧩 PROMOCIÓN HACIA 'dev' (sin monitor, con estrategia)"
+    log_info "🧩 PROMOCIÓN HACIA 'dev' (cero fricción)"
     log_info "    Fuente : ${source_branch} @${source_sha:0:7}"
     log_info "    Destino: dev"
     echo
@@ -121,6 +114,7 @@ promote_to_dev() {
     local strategy="${DEVTOOLS_PROMOTE_STRATEGY:-}"
     [[ -n "${strategy:-}" ]] || strategy="ff-only"
 
+    # Aplicar estrategia y PUSHEAR inmediatamente a origin/dev (lo hace git-ops.sh)
     local final_sha="" rc=0
     while true; do
         final_sha="$(update_branch_to_sha_with_strategy "dev" "$source_sha" "origin" "$strategy")"
@@ -135,7 +129,19 @@ promote_to_dev() {
         break
     done
 
-    log_success "✅ Promoción OK: ${source_branch} -> dev (strategy=${strategy}, sha=${final_sha:0:7})"
+    log_success "✅ Push OK: ${source_branch} -> origin/dev (strategy=${strategy}, sha=${final_sha:0:7})"
+
+    # CONFIRMACIÓN VISUAL (tú la verificas con ls-remote; aquí queda impreso)
+    echo
+    log_info "🔎 Confirmación visual (git ls-remote --heads origin dev):"
+    local remote_line
+    remote_line="$(git ls-remote --heads origin dev 2>/dev/null | head -n 1 || true)"
+    if [[ -n "${remote_line:-}" ]]; then
+        echo "   ${remote_line}"
+    else
+        log_warn "No pude obtener ls-remote para origin/dev (¿red/credenciales?)."
+    fi
+    echo
 
     # Monitor opcional por flag/env
     local want_monitor="${GIT_PROMOTE_MONITOR:-${DEVTOOLS_PROMOTE_MONITOR:-0}}"
@@ -147,6 +153,5 @@ promote_to_dev() {
         exit $?
     fi
 
-    log_success "DEV remoto OK. (Monitor desactivado por defecto)"
     exit 0
 }
