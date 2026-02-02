@@ -176,7 +176,8 @@ case "$TARGET_ENV" in
         ;;
 
     prod)
-        export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="prod"
+        # prod = entorno; la rama real es main
+        export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="main"
         source "${PROMOTE_LIB}/workflows/to-prod.sh"
         promote_to_prod
         ;;
@@ -205,7 +206,7 @@ case "$TARGET_ENV" in
 
         # Guardias: evitar intentos absurdos (fuente inválida)
         case "${src_branch:-}" in
-            ""|"(detached)"|dev-update|dev|main|staging|prod)
+            ""|"(detached)"|dev-update|dev|main|staging)
                 die "⛔ Rama fuente inválida para dev-update: '${src_branch}'. Usa: git promote dev-update feature/<rama>"
                 ;;
         esac

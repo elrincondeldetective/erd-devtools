@@ -111,7 +111,7 @@ maybe_delete_source_branch() {
 
     # 1) PROTEGIDAS: nunca borrar
     case "$branch" in
-        main|master|dev|staging|prod|dev-update)
+        dev|staging|main)
             log_info "📌 Rama fuente '$branch' es una excepción protegida. Manteniéndola."
             return 0
             ;;
