@@ -6,7 +6,7 @@
 # 1. Discovery (Búsqueda de PRs)
 # 2. Visualization (Dashboard de estado)
 # 3. Interaction (Aprobación, Merge o FORCE PUSH)
-# 4. Post-Processing (Release Please & Golden SHA)
+# 4. Post-Processing (Release Please)
 #
 # Dependencias: utils.sh, helpers/gh-interactions.sh, git-ops.sh
 
@@ -247,95 +247,14 @@ promote_dev_monitor() {
     fi
 
     # --------------------------------------------------------------------------
-    # 4. POST-PROCESAMIENTO (BOT & GOLDEN SHA)
+    # 4. POST-PROCESAMIENTO (MINIMAL)
     # --------------------------------------------------------------------------
-
     if [[ "$something_merged" == "0" ]]; then
         log_info "ℹ️  No se realizaron cambios en dev. Finalizando."
         return 0
     fi
 
-    log_info "🔄 Actualizando referencias post-merge..."
-
-    # A) Gestión del Bot Release Please (Opcional)
-    local rp_pr=""
-    local post_rp=0
-
-    if repo_has_workflow_file "release-please"; then
-        log_info "🤖 Escaneando actividad de 'release-please'..."
-
-        # Intentamos ver si el workflow arrancó para mostrar logs
-        local rp_wf_id
-        rp_wf_id="$(GH_PAGER=cat gh run list --workflow release-please.yml --limit 1 --json databaseId,status --jq '.[0] | select(.status != "completed") | .databaseId' 2>/dev/null)"
-        
-        if [[ -n "$rp_wf_id" ]]; then
-                log_info "📺 Viendo logs de Release Please (ID: $rp_wf_id)..."
-                GH_PAGER=cat gh run watch "$rp_wf_id"
-        fi
-
-        # Buscar el PR resultante
-        rp_pr="$(wait_for_release_please_pr_number_optional)"
-        
-        if [[ "${rp_pr:-}" =~ ^[0-9]+$ ]]; then
-            post_rp=1
-            banner "🤖 PR DE RELEASE DETECTADO: #$rp_pr"
-            
-            # Verificamos estado del PR del bot antes de preguntar
-            local rp_status
-            rp_status="$(gh_get_pr_rich_details "$rp_pr")"
-            ui_render_pr_card "$rp_status"
-            
-            local bot_choice
-            bot_choice="$(ui_read_option "   ¿Auto-mergear PR del bot #$rp_pr ahora? [Y/n] > ")"
-            if [[ "$bot_choice" =~ ^[Yy] || -z "$bot_choice" ]]; then
-                log_info "🤖 Auto-mergeando bot (release-please)..."
-                GH_PAGER=cat gh pr merge "$rp_pr" --auto --squash
-                
-                # Streaming del merge del bot
-                stream_branch_activity "dev" "Release Please Merge"
-                
-                wait_for_pr_merge_and_get_sha "$rp_pr" >/dev/null
-                log_success "✅ Bot mergeado."
-            else
-                log_info "⏭️  Bot saltado."
-            fi
-        else
-            log_info "ℹ️  No se detectó PR de release-please (o timeout). Continuando."
-        fi
-    fi
-
-    # B) Captura del GOLDEN SHA (Estado final de Dev)
-    local dev_sha
-    dev_sha="$(__remote_head_sha "dev" "origin")"
-    
-    if [[ -z "${dev_sha:-}" ]]; then
-        # Fallback de seguridad
-        git fetch origin dev >/dev/null 2>&1
-        dev_sha="$(git rev-parse origin/dev)"
-    fi
-
-    if [[ -z "${dev_sha:-}" ]]; then
-        log_error "❌ No pude resolver 'origin/dev'. No se puede actualizar Golden SHA."
-        return 1
-    fi
-
-    # C) Verificar Build Final en Dev (Critical Safety Check)
-    if repo_has_workflow_file "build-push"; then
-            # El streaming ya debió mostrarnos los logs, pero esto asegura éxito rotundo
-            wait_for_workflow_success_on_ref_or_sha_or_die "build-push.yaml" "$dev_sha" "dev" "Build Final (Dev)"
-    fi
-
-    # D) Escribir Golden SHA
-    write_golden_sha "$dev_sha" "source=origin/dev interactive=true post_rp=${post_rp}" || true
-    log_success "✅ GOLDEN_SHA actualizado: $dev_sha"
-    
-    # E) Trigger GitOps (Si aplica)
-    local changed_paths
-    changed_paths="$(git diff --name-only "${dev_sha}~1..${dev_sha}" 2>/dev/null || true)"
-    maybe_trigger_gitops_update "dev" "$dev_sha" "$changed_paths"
-
     banner "✨ PROMOCIÓN A DEV FINALIZADA CON ÉXITO"
     echo "👉 Siguiente paso recomendado: git promote staging"
-    
     return 0
 }
