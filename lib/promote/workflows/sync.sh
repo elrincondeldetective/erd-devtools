@@ -14,6 +14,7 @@ __SYNC_DIR__="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${__SYNC_DIR__}/to-dev.sh"
 source "${__SYNC_DIR__}/to-staging.sh"
 source "${__SYNC_DIR__}/to-prod.sh"
+
 promote_sync_all() {
     local current_branch
     current_branch="$(git branch --show-current 2>/dev/null || echo "")"
@@ -33,7 +34,7 @@ promote_sync_all() {
     log_info "Nota: -y/--yes salta confirmaciones humanas, pero NUNCA gates técnicos."
     echo
 
-    # Verificar que las funciones base existen (módulos cargados por workflows.sh)
+    # Verificar que las funciones base existen
     declare -F promote_to_dev >/dev/null 2>&1 || die "No está cargado promote_to_dev (to-dev.sh)."
     declare -F promote_to_staging >/dev/null 2>&1 || die "No está cargado promote_to_staging (to-staging.sh)."
     declare -F promote_to_prod >/dev/null 2>&1 || die "No está cargado promote_to_prod (to-prod.sh)."
@@ -41,13 +42,18 @@ promote_sync_all() {
     local rc=0
 
     log_info "1/3 🧨 DEV (Lab -> Source of Truth)"
-    # Ejecutamos en subshell para aislar variables exportadas, aunque en este caso
-    # Ejecutamos cada paso en subshell para aislar side-effects y permitir `exit` internos.
+    # Default seguro: NO direct. Si quieres el modo directo, actívalo explícitamente:
+    #   export DEVTOOLS_SYNC_DEV_DIRECT=1
+    local use_direct="${DEVTOOLS_SYNC_DEV_DIRECT:-0}"
 
-    (
-        export DEVTOOLS_PROMOTE_DEV_DIRECT=1
-        promote_to_dev
-    )
+    if [[ "$use_direct" == "1" ]]; then
+        (
+            export DEVTOOLS_PROMOTE_DEV_DIRECT=1
+            promote_to_dev
+        )
+    else
+        ( promote_to_dev )
+    fi
     rc=$?
     [[ "$rc" -eq 0 ]] || { log_error "❌ Sync abortado: falló DEV (rc=$rc)."; return "$rc"; }
 
