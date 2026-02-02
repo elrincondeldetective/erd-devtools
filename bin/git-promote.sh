@@ -170,7 +170,6 @@ case "$TARGET_ENV" in
         ;;
 
     staging)
-        staging)
         export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="staging"
         source "${PROMOTE_LIB}/workflows/to-staging.sh"
         promote_to_staging
