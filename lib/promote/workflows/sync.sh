@@ -3,7 +3,7 @@
 #
 # Este módulo maneja SYNC como MACRO ESTRICTO (sin backdoors):
 # - promote_sync_all: Ejecuta la cadena de confianza completa:
-#   1) Lab -> DEV (modo directo/aplastante, hardcoded feature/dev-update)
+#   1) Lab -> DEV (modo directo/aplastante, hardcoded dev-update)
 #   2) DEV -> STAGING (Golden SHA estricto + waits)
 #   3) STAGING -> PROD (Golden SHA estricto + waits + release)
 #
@@ -17,13 +17,17 @@ promote_sync_all() {
     current_branch="$(git branch --show-current 2>/dev/null || echo "")"
 
     # 🔒 Requisito: debes estar en la rama de laboratorio
-    if [[ "$current_branch" != "feature/dev-update" ]]; then
-        die "⛔ Sync estricto requiere estar en feature/dev-update. Cámbiate a esa rama y reintenta."
+    # Nuevo nombre canónico: dev-update
+    # Compat: permitimos feature/dev-update pero advertimos (deprecado)
+    if [[ "$current_branch" == "feature/dev-update" ]]; then
+        log_warn "⚠️ Rama 'feature/dev-update' está deprecada. Usa 'dev-update'."
+    elif [[ "$current_branch" != "dev-update" ]]; then
+        die "⛔ Sync estricto requiere estar en 'dev-update'. Cámbiate a esa rama y reintenta."
     fi
 
     echo
     banner "🔄 SYNC (MACRO SEGURO)"
-    log_info "Cadena: feature/dev-update -> dev -> staging -> prod"
+    log_info "Cadena: dev-update -> dev -> staging -> prod"
     log_info "Nota: -y/--yes salta confirmaciones humanas, pero NUNCA gates técnicos."
     echo
 

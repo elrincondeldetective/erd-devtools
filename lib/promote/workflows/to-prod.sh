@@ -74,20 +74,39 @@ promote_to_prod() {
         ensure_clean_git
         
         local from_branch="${DEVTOOLS_PROMOTE_FROM_BRANCH:-$current}"
-        log_info "📍 Estás en '${from_branch}'. 🧨 Sobrescribiendo historia de 'main' con 'staging' (${staging_sha})..."
-        force_update_branch_to_sha "main" "$staging_sha" "origin" || { log_error "No pude sobrescribir 'main' con SHA ${staging_sha:0:7}."; exit 1; }
-        local main_sha="$staging_sha"
-        log_success "✅ Producción actualizada (overwrite)."
+        local strategy="${DEVTOOLS_PROMOTE_STRATEGY:-ff-only}"
+        log_info "📍 Estás en '${from_branch}'. Estrategia: ${strategy}"
 
-        # Verificación explícita: origin/main == staging_sha (== GOLDEN_SHA)
+        local main_sha=""
+        local rc=0
+        while true; do
+            main_sha="$(update_branch_to_sha_with_strategy "main" "$staging_sha" "origin" "$strategy")"
+            rc=$?
+            if [[ "$rc" -eq 3 ]]; then
+                log_warn "⚠️ Fast-Forward no es posible (hay divergencia en main). Debes elegir otra opción."
+                strategy="$(promote_choose_strategy_or_die)"
+                export DEVTOOLS_PROMOTE_STRATEGY="$strategy"
+                continue
+            fi
+            [[ "$rc" -eq 0 ]] || { log_error "No pude actualizar 'main' con estrategia ${strategy}."; exit 1; }
+            break
+        done
+        log_success "✅ Producción actualizada. SHA final: ${main_sha:0:7}"
+
+        if declare -F write_golden_sha >/dev/null 2>&1; then
+            write_golden_sha "$main_sha" "auto: promote_to_prod(strategy=${strategy}) source=${staging_sha}" || true
+        fi
+
+
+        # Verificación explícita: origin/main == main_sha
         git fetch origin main >/dev/null 2>&1 || true
         local origin_main
         origin_main="$(git rev-parse origin/main 2>/dev/null || true)"
-        if [[ "$origin_main" != "$staging_sha" ]]; then
-            log_error "main mismatch: origin/main=${origin_main:0:7} != staging=${staging_sha:0:7}"
+        if [[ "$origin_main" != "$main_sha" ]]; then
+            log_error "main mismatch: origin/main=${origin_main:0:7} != local=${main_sha:0:7}"
             exit 1
         fi
-        log_success "✅ Confirmado: origin/main == STAGING_SHA == GOLDEN_SHA (${staging_sha:0:7})"
+        log_success "✅ Confirmado: origin/main == ${main_sha:0:7}"
         print_tags_at_sha "$main_sha" "tags@origin/main(${main_sha:0:7})"
 
         # Esperar tag final + build del tag (solo si este repo tiene el tagger)
@@ -149,10 +168,25 @@ promote_to_prod() {
         ensure_clean_git
         
         local from_branch="${DEVTOOLS_PROMOTE_FROM_BRANCH:-$current}"
-        log_info "📍 Estás en '${from_branch}'. 🧨 Sobrescribiendo historia de 'main' con 'staging' (${staging_sha})..."
-        force_update_branch_to_sha "main" "$staging_sha" "origin" || { log_error "No pude sobrescribir 'main' con SHA ${staging_sha:0:7}."; exit 1; }
-        local main_sha="$staging_sha"
-        log_success "✅ Producción actualizada (overwrite, sin tag final)."
+        local strategy="${DEVTOOLS_PROMOTE_STRATEGY:-ff-only}"
+        log_info "📍 Estás en '${from_branch}'. Estrategia: ${strategy}"
+
+        local main_sha=""
+        local rc=0
+        while true; do
+            main_sha="$(update_branch_to_sha_with_strategy "main" "$staging_sha" "origin" "$strategy")"
+            rc=$?
+            if [[ "$rc" -eq 3 ]]; then
+                log_warn "⚠️ Fast-Forward no es posible (hay divergencia en main). Debes elegir otra opción."
+                strategy="$(promote_choose_strategy_or_die)"
+                export DEVTOOLS_PROMOTE_STRATEGY="$strategy"
+                continue
+            fi
+            [[ "$rc" -eq 0 ]] || { log_error "No pude actualizar 'main' con estrategia ${strategy}."; exit 1; }
+            break
+        done
+        log_success "✅ Producción actualizada (consumer mode). SHA final: ${main_sha:0:7}"
+
         print_tags_at_sha "$main_sha" "tags@origin/main(${main_sha:0:7})"
 
         local changed_paths

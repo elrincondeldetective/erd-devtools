@@ -108,21 +108,41 @@ promote_to_staging() {
     # --- CAMINO A: AUTOMÁTICO (Solo Push, tags por bot si existen) / O SIN TAGS (consumer mode) ---
     if [[ "$use_remote_tagger" == "1" ]]; then
         local from_branch="${DEVTOOLS_PROMOTE_FROM_BRANCH:-$current}"
-        log_info "📍 Estás en '${from_branch}'. 🧨 Sobrescribiendo historia de 'staging' con 'dev' (${golden_sha})..."
-        force_update_branch_to_sha "staging" "$golden_sha" "origin" || { log_error "No pude sobrescribir 'staging' con SHA ${golden_sha:0:7}."; exit 1; }
-        local staging_sha="$golden_sha"
-        log_success "✅ Staging actualizado (overwrite)."
+        local strategy="${DEVTOOLS_PROMOTE_STRATEGY:-ff-only}"
+        log_info "📍 Estás en '${from_branch}'. Estrategia: ${strategy}"
+
+        local staging_sha=""
+        local rc=0
+        while true; do
+            staging_sha="$(update_branch_to_sha_with_strategy "staging" "$golden_sha" "origin" "$strategy")"
+            rc=$?
+            if [[ "$rc" -eq 3 ]]; then
+                log_warn "⚠️ Fast-Forward no es posible (hay divergencia en staging). Debes elegir otra opción."
+                strategy="$(promote_choose_strategy_or_die)"
+                export DEVTOOLS_PROMOTE_STRATEGY="$strategy"
+                continue
+            fi
+            [[ "$rc" -eq 0 ]] || { log_error "No pude actualizar 'staging' con estrategia ${strategy}."; exit 1; }
+            break
+        done
+
+        log_success "✅ Staging actualizado. SHA final: ${staging_sha:0:7}"
+
+        # Compat GOLDEN_SHA: si existe el módulo, lo actualizamos al SHA real desplegado en staging
+        if declare -F write_golden_sha >/dev/null 2>&1; then
+            write_golden_sha "$staging_sha" "auto: promote_to_staging strategy=${strategy} source=${golden_sha}" || true
+        fi
 
 
-        # Verificación explícita: origin/staging == golden_sha
+        # Verificación explícita: origin/staging == staging_sha (sea FF/merge/force)
         git fetch origin staging >/dev/null 2>&1 || true
         local origin_staging
         origin_staging="$(git rev-parse origin/staging 2>/dev/null || true)"
-        if [[ "$origin_staging" != "$golden_sha" ]]; then
-            log_error "staging mismatch: origin/staging=${origin_staging:0:7} != golden=${golden_sha:0:7}"
+        if [[ "$origin_staging" != "$staging_sha" ]]; then
+            log_error "staging mismatch: origin/staging=${origin_staging:0:7} != local=${staging_sha:0:7}"
             exit 1
         fi
-        log_success "✅ Confirmado: origin/staging == GOLDEN_SHA (${golden_sha:0:7})"
+        log_success "✅ Confirmado: origin/staging == ${staging_sha:0:7}"
         print_tags_at_sha "$staging_sha" "tags@origin/staging(${staging_sha:0:7})"
 
         # Esperar RC tag + build del tag (solo si este repo tiene el tagger)
@@ -255,10 +275,28 @@ promote_to_staging() {
     fi
 
     local from_branch="${DEVTOOLS_PROMOTE_FROM_BRANCH:-$current}"
-    log_info "📍 Estás en '${from_branch}'. 🧨 Sobrescribiendo historia de 'staging' con 'dev' (${golden_sha})..."
-    force_update_branch_to_sha "staging" "$golden_sha" "origin" || { log_error "No pude sobrescribir 'staging' con SHA ${golden_sha:0:7}."; exit 1; }
-    local staging_sha="$golden_sha"
-    log_success "✅ Staging actualizado (overwrite)."
+    local strategy="${DEVTOOLS_PROMOTE_STRATEGY:-ff-only}"
+    log_info "📍 Estás en '${from_branch}'. Estrategia: ${strategy}"
+
+    local staging_sha=""
+    local rc=0
+    while true; do
+        staging_sha="$(update_branch_to_sha_with_strategy "staging" "$golden_sha" "origin" "$strategy")"
+        rc=$?
+        if [[ "$rc" -eq 3 ]]; then
+            log_warn "⚠️ Fast-Forward no es posible (hay divergencia en staging). Debes elegir otra opción."
+            strategy="$(promote_choose_strategy_or_die)"
+            export DEVTOOLS_PROMOTE_STRATEGY="$strategy"
+            continue
+        fi
+        [[ "$rc" -eq 0 ]] || { log_error "No pude actualizar 'staging' con estrategia ${strategy}."; exit 1; }
+        break
+    done
+    log_success "✅ Staging actualizado. SHA final: ${staging_sha:0:7}"
+
+    if declare -F write_golden_sha >/dev/null 2>&1; then
+        write_golden_sha "$staging_sha" "auto: promote_to_staging(strategy=${strategy}) source=${golden_sha}" || true
+    fi
 
     # Esperar RC tag + build del tag (solo si este repo tiene el tagger)
     if repo_has_workflow_file "tag-rc-on-staging"; then

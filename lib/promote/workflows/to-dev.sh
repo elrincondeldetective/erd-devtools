@@ -73,25 +73,85 @@ __resolve_promote_script() {
 # 3. PROMOTE TO DEV (Main Entry Point)
 # ==============================================================================
 promote_to_dev() {
-    # [FIX] Resync de submódulos antes de cualquier validación (ensure_clean_git)
     resync_submodules_hard
 
-    # --------------------------------------------------------------------------
+    # NUEVO: garantizar aterrizaje final en DEV (lo ejecuta el trap del bin principal)
+    export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="dev"
+
     # ESTRATEGIA 1: Modo DIRECTO (sin PR feature->dev)
-    # --------------------------------------------------------------------------
-    # Aplasta localmente (squash) feature -> dev, push directo a origin/dev
     if [[ "${DEVTOOLS_PROMOTE_DEV_DIRECT:-0}" == "1" ]]; then
-        [[ "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}" == "feature/dev-update" ]] || die "⛔ DEVTOOLS_PROMOTE_DEV_DIRECT=1 solo está permitido desde feature/dev-update."
-        # Función importada de strategies/dev-direct.sh
+        [[ "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}" == "dev-update" ]] \
+            || [[ "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}" == "feature/dev-update" ]] \
+            || die "⛔ DEVTOOLS_PROMOTE_DEV_DIRECT=1 solo está permitido desde dev-update (feature/dev-update está deprecada)."
+
+        # (se mantiene igual)
         promote_to_dev_direct
         exit $?
     fi
-    # Nuevo contrato: git promote dev = monitor/admin (NO crea PR)
-    if ! command -v gh >/dev/null 2>&1; then
-        log_error "Se requiere 'gh' para monitorear estado de DEV (policía estricto)."
-        exit 1
+
+    # Fuente: rama donde se invocó el comando (capturada por el bin principal)
+    local source_branch="${DEVTOOLS_PROMOTE_FROM_BRANCH:-}"
+    if [[ -z "${source_branch:-}" || "${source_branch:-}" == "(detached)" ]]; then
+        source_branch="$(git branch --show-current 2>/dev/null || echo "")"
+    fi
+    source_branch="$(echo "${source_branch:-}" | tr -d '[:space:]')"
+    [[ -n "${source_branch:-}" ]] || die "No pude detectar rama fuente para promover a dev."
+
+    # SHA fuente: preferimos el snapshot capturado por el bin (antes de cambiar de rama)
+    local source_sha="${DEVTOOLS_PROMOTE_FROM_SHA:-}"
+    if [[ -z "${source_sha:-}" ]]; then
+        source_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+    fi
+    [[ -n "${source_sha:-}" ]] || die "No pude resolver SHA fuente."
+
+    echo
+    log_info "🧩 PROMOCIÓN HACIA 'dev' (cero fricción)"
+    log_info "    Fuente : ${source_branch} @${source_sha:0:7}"
+    log_info "    Destino: dev"
+    echo
+
+    # Estrategia (Menú Universal): el bin la setea siempre, pero dejamos fallback seguro.
+    local strategy="${DEVTOOLS_PROMOTE_STRATEGY:-}"
+    [[ -n "${strategy:-}" ]] || strategy="ff-only"
+
+    # Aplicar estrategia y PUSHEAR inmediatamente a origin/dev (lo hace git-ops.sh)
+    local final_sha="" rc=0
+    while true; do
+        final_sha="$(update_branch_to_sha_with_strategy "dev" "$source_sha" "origin" "$strategy")"
+        rc=$?
+        if [[ "$rc" -eq 3 ]]; then
+            log_warn "⚠️ Fast-Forward NO es posible. Elige otra estrategia."
+            strategy="$(promote_choose_strategy_or_die)"
+            export DEVTOOLS_PROMOTE_STRATEGY="$strategy"
+            continue
+        fi
+        [[ "$rc" -eq 0 ]] || die "No pude promover hacia 'dev' (strategy=${strategy}, rc=${rc})."
+        break
+    done
+
+    log_success "✅ Push OK: ${source_branch} -> origin/dev (strategy=${strategy}, sha=${final_sha:0:7})"
+
+    # CONFIRMACIÓN VISUAL (tú la verificas con ls-remote; aquí queda impreso)
+    echo
+    log_info "🔎 Confirmación visual (git ls-remote --heads origin dev):"
+    local remote_line
+    remote_line="$(git ls-remote --heads origin dev 2>/dev/null | head -n 1 || true)"
+    if [[ -n "${remote_line:-}" ]]; then
+        echo "   ${remote_line}"
+    else
+        log_warn "No pude obtener ls-remote para origin/dev (¿red/credenciales?)."
+    fi
+    echo
+
+    # Monitor opcional por flag/env
+    local want_monitor="${GIT_PROMOTE_MONITOR:-${DEVTOOLS_PROMOTE_MONITOR:-0}}"
+    if [[ "${want_monitor}" == "1" ]]; then
+        if ! command -v gh >/dev/null 2>&1; then
+            die "Se requiere 'gh' para ejecutar el monitor (actívalo instalando gh o desactiva GIT_PROMOTE_MONITOR)."
+        fi
+        promote_dev_monitor "" ""
+        exit $?
     fi
 
-    promote_dev_monitor "" ""
-    exit $?
+    exit 0
 }
