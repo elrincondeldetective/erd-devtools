@@ -122,8 +122,7 @@ if [[ -z "$TARGET_ENV" ]]; then
     echo "  staging             : Promocionar a STAGING (Release Candidate)"
     echo "  prod                : Promocionar a PROD (Live)"
     echo "  sync                : Sincronización inteligente (Smart Sync)"
-    echo "  dev-update          : Aplasta (squash) una rama dentro de dev-update"
-    echo "  feature/dev-update  : (DEPRECADO) alias de dev-update"
+    echo "  dev-update          : Integrar cambios a dev-update (rama de trabajo)"
     echo "  hotfix              : Iniciar flujo de hotfix"
     echo "  doctor              : Verificar estado del repo"
     exit 1
@@ -201,13 +200,13 @@ case "$TARGET_ENV" in
         src_branch="${2:-}"
         if [[ -z "${src_branch:-}" ]]; then
             src_branch="${DEVTOOLS_PROMOTE_FROM_BRANCH:-}"
-            log_info "ℹ️  No se indicó rama fuente. Usando rama actual: ${src_branch}"
+            log_info "ℹ️  No se indicó rama fuente. Usando tu rama actual: ${src_branch}"
         fi
 
         # Guardias: evitar intentos absurdos (fuente inválida)
         case "${src_branch:-}" in
             ""|"(detached)"|dev-update|dev|main|staging)
-                die "⛔ Rama fuente inválida para dev-update: '${src_branch}'. Usa: git promote dev-update feature/<rama>"
+                die "⛔ Rama fuente inválida para dev-update: '${src_branch}'. Usa una rama de trabajo (no protegida) como fuente."
                 ;;
         esac
 
