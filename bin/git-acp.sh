@@ -154,7 +154,17 @@ NEXT=$((COUNT_BEFORE + 1))
 
 if ! $DRY_RUN; then
   # A. Validar/Renombrar rama Feature
+  before_branch="$(git branch --show-current 2>/dev/null || echo "(detached)")"
   ensure_feature_branch_before_commit
+  after_branch="$(git branch --show-current 2>/dev/null || echo "(detached)")"
+
+  if [[ "$before_branch" != "$after_branch" ]]; then
+    ui_header "✅ Seguridad aplicada"
+    ui_warn "Se evitó commitear en rama protegida."
+    ui_success "Commit se hará en: $after_branch"
+    ui_info "Antes estabas en: $before_branch"
+    echo
+  fi
   
   # B. Commit
   do_commit "${MSG:-}" "$NEXT"

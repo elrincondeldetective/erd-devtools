@@ -1,340 +1,247 @@
 #!/usr/bin/env bash
 # /webapps/erd-ecosystem/.devtools/bin/git-promote.sh
-set -euo pipefail
-IFS=$'\n\t'
+#
+# Punto de entrada principal para promociones de código.
+# Orquesta la carga de librerías, validaciones de entorno y ejecución de workflows.
+
+set -e
 
 # ==============================================================================
-# 1. BOOTSTRAP DE LIBRERÍAS.
+# 0.0 DEFAULTS (set -u safe)
+# ==============================================================================
+# Si no está seteada, por defecto NO forzamos guard canónico extra
+export DEVTOOLS_FORCE_CANONICAL_REFS="${DEVTOOLS_FORCE_CANONICAL_REFS:-0}"
+export DEVTOOLS_SKIP_CANONICAL_CHECK="${DEVTOOLS_SKIP_CANONICAL_CHECK:-0}"
+
+# ==============================================================================
+# 0. BOOTSTRAP & CARGA DE LIBRERÍAS
 # ==============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="${SCRIPT_DIR}/../lib"
 
-# Definimos REPO_ROOT globalmente para que todas las libs lo puedan usar
-if [[ -z "${REPO_ROOT:-}" ]]; then
-    export REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-fi
+# Cargar utilidades core (logging, ui, guards)
+source "${LIB_DIR}/core/utils.sh"
+source "${LIB_DIR}/core/git-ops.sh"
 
-# --- Carga de Librerías Core ---
-source "${LIB_DIR}/core/utils.sh"       # Logs, UI
-source "${LIB_DIR}/core/config.sh"      # Config Global (SIMPLE_MODE)
-source "${LIB_DIR}/core/git-ops.sh"     # Git Ops básicos
-source "${LIB_DIR}/release-flow.sh"     # Versioning tools
-source "${LIB_DIR}/ssh-ident.sh"        # Gestión de Identidad
-
-# --- Carga de Módulos Refactorizados (Divide y Vencerás) ---
+# Definir ruta de librerías de promoción
 PROMOTE_LIB="${LIB_DIR}/promote"
 
-# 1. Estrategia de Versionado (Fases 1 y 2)
+# Cargar estrategias de versión
 source "${PROMOTE_LIB}/version-strategy.sh"
 
-# 2. Integridad del Golden SHA (Fase 3)
-source "${PROMOTE_LIB}/golden-sha.sh"
-
-# 3. Integración con GitOps (Fase 4)
-source "${PROMOTE_LIB}/gitops-integration.sh"
-
-# 4. Flujos de Trabajo Principales (Lógica de Negocio)
-source "${PROMOTE_LIB}/workflows.sh"
-
-# ==============================================================================
-# 0.1 PARSEO TEMPRANO DE FLAGS (antes de cualquier guardia)
-# ==============================================================================
-DEVTOOLS_AUTO_APPROVE=false
-while (( $# )); do
-    case "${1:-}" in
-        -y|--yes)
-        DEVTOOLS_AUTO_APPROVE=true
-        export DEVTOOLS_ASSUME_YES=1
-        shift
-        ;;
-        *) break ;;
-    esac
-done
-
-TARGET_ENV="${1:-}"
-
-# ==============================================================================
-# 0. GUARDIA: TOOLSET CANÓNICO (evita "se arregla y vuelve" por rama del submódulo)
-# ==============================================================================
-DEVTOOLS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-
-# Skip guard para doctor (diagnóstico no debe bloquear)
-if [[ "${TARGET_ENV:-}" == "doctor" ]]; then
-    :
-else
-    # Inicializar array canónico si no existe o está vacío (Bash-safe)
-    if ! declare -p DEVTOOLS_CANONICAL_REFS >/dev/null 2>&1; then
-        DEVTOOLS_CANONICAL_REFS=(dev feature/dev-update)
-    elif [[ "$(declare -p DEVTOOLS_CANONICAL_REFS 2>/dev/null)" != "declare -a"* ]]; then
-        DEVTOOLS_CANONICAL_REFS=(dev feature/dev-update)
-    elif [[ "${#DEVTOOLS_CANONICAL_REFS[@]}" -eq 0 ]]; then
-        DEVTOOLS_CANONICAL_REFS=(dev feature/dev-update)
-    fi
-
-    DEVTOOLS_BYPASS_CANONICAL_GUARD="${DEVTOOLS_BYPASS_CANONICAL_GUARD:-0}"
-
-    if [[ "$DEVTOOLS_BYPASS_CANONICAL_GUARD" != "1" ]] && git -C "$DEVTOOLS_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        tool_branch="$(git -C "$DEVTOOLS_ROOT" branch --show-current 2>/dev/null || echo "")"
-        tool_sha="$(git -C "$DEVTOOLS_ROOT" rev-parse --short HEAD 2>/dev/null || echo "unknown")"
-        tool_ver="$(cat "$DEVTOOLS_ROOT/lib/core/version.sh" 2>/dev/null || echo "unknown")"
-
-        allowed=0
-        for ref in "${DEVTOOLS_CANONICAL_REFS[@]}"; do
-            [[ "$tool_branch" == "$ref" ]] && allowed=1 && break
-        done
-
-        # Excepción: main permitido solo para hotfix explícito
-        __cmd="${TARGET_ENV:-${1:-}}"
-        if [[ "$tool_branch" == "main" && ( "$__cmd" == "hotfix" || "$__cmd" == "hotfix-finish" ) ]]; then
-            allowed=1
-        fi
-
-        if [[ "$allowed" -ne 1 ]]; then
-            echo
-            log_warn "🧭 Toolset NO canónico detectado: branch='${tool_branch:-detached}' sha=${tool_sha} (devtools ${tool_ver})"
-            log_warn "Este repo .devtools es versionado por rama: el comportamiento cambia según tu working tree."
-            echo "✅ Recomendado: usar ${DEVTOOLS_CANONICAL_REFS[*]}"
-            echo
-
-            if [[ -n "$(git -C "$DEVTOOLS_ROOT" status --porcelain 2>/dev/null)" ]]; then
-                die "El toolset tiene cambios locales. Haz commit/stash o exporta DEVTOOLS_BYPASS_CANONICAL_GUARD=1."
-            fi
-
-            if [[ "${DEVTOOLS_ASSUME_YES:-0}" == "1" ]] || ask_yes_no "¿Cambiar el toolset a '${DEVTOOLS_CANONICAL_REFS[0]}' y re-ejecutar?"; then
-                git -C "$DEVTOOLS_ROOT" fetch origin --prune >/dev/null 2>&1 || true
-                git -C "$DEVTOOLS_ROOT" checkout "${DEVTOOLS_CANONICAL_REFS[0]}" >/dev/null 2>&1 || die "No pude cambiar a rama canónica."
-                exec "$DEVTOOLS_ROOT/bin/git-promote.sh" "$@"
-            else
-                die "Abortado para evitar ejecutar un toolset desalineado. Cambia a una rama canónica y reintenta."
-            fi
-        fi
-    fi
+# Helpers comunes (incluye maybe_delete_source_branch)
+# Nota: es seguro cargarlo aquí; usa log_* / ask_yes_no ya disponibles.
+if [[ -f "${PROMOTE_LIB}/workflows/common.sh" ]]; then
+  source "${PROMOTE_LIB}/workflows/common.sh"
 fi
+
 # ==============================================================================
-# 1.1 CONTEXTO: rama desde la que se invoca (antes de cualquier checkout)
+# 1. CONTEXTO + LANDING TRAP (restaurar o aterrizar + borrar rama fuente)
 # ==============================================================================
-# ✅ FIX: siempre inicializar estas vars (set -u no perdona)
-export DEVTOOLS_PROMOTE_FROM_BRANCH="${DEVTOOLS_PROMOTE_FROM_BRANCH:-$(git branch --show-current 2>/dev/null || true)}"
+export DEVTOOLS_PROMOTE_FROM_BRANCH="${DEVTOOLS_PROMOTE_FROM_BRANCH:-$(git branch --show-current 2>/dev/null || echo "")}"
 export DEVTOOLS_PROMOTE_FROM_BRANCH="$(echo "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}" | tr -d '[:space:]')"
-
-if [[ -z "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}" ]]; then
-    export DEVTOOLS_PROMOTE_FROM_BRANCH="(detached)"
-fi
-
+[[ -n "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}" ]] || export DEVTOOLS_PROMOTE_FROM_BRANCH="(detached)"
 export DEVTOOLS_PROMOTE_FROM_SHA="${DEVTOOLS_PROMOTE_FROM_SHA:-$(git rev-parse HEAD 2>/dev/null || true)}"
 
-# Landing override (solo en éxito). Vacío = comportamiento antiguo (restaurar).
+# Landing override (vacío = restaurar rama original)
 export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="${DEVTOOLS_LAND_ON_SUCCESS_BRANCH:-}"
 
-# ==============================================================================
-# 1.2 SEGURIDAD DE RAMAS (LANDING TRAP) - [NUEVO]
-# ==============================================================================
-# Esta función se ejecuta automáticamente al salir (EXIT) o al cancelar (Ctrl+C).
-# Garantiza que el usuario siempre regrese a su rama original o aterrice en la destino si hubo éxito.
 cleanup_on_exit() {
     local exit_code=$?
     trap - EXIT INT TERM
 
-    if [[ "${TARGET_ENV:-}" != "_dev-monitor" ]]; then
-        # ÉXITO: obedecer landing override si existe
-        if [[ "$exit_code" -eq 0 && -n "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH:-}" ]]; then
-            local cur
-            cur="$(git branch --show-current 2>/dev/null || true)"
-            if [[ "$cur" != "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}" ]]; then
-                echo "🛬 Finalizando flujo (éxito): quedando en '${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}'..."
+    # Doctor no debe intentar borrar ramas ni aterrizar raro
+    if [[ "${TARGET_ENV:-}" == "doctor" ]]; then
+        exit "$exit_code"
+    fi
+
+    # ÉXITO: aterrizar primero y luego preguntar borrado (para cumplir "quedarme en destino")
+    if [[ "$exit_code" -eq 0 ]]; then
+        # 1) aterrizar en rama destino si aplica
+        if [[ -n "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH:-}" ]]; then
+            ui_info "🛬 Finalizando flujo (éxito): quedando en '${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}'..."
+            if ! git checkout "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}" >/dev/null 2>&1; then
+                # Intentar tracking si existe en origin
+                ensure_local_branch_tracks_remote "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}" "origin" >/dev/null 2>&1 || true
                 git checkout "${DEVTOOLS_LAND_ON_SUCCESS_BRANCH}" >/dev/null 2>&1 || true
             fi
-            exit 0
         fi
 
-        # FALLO/CANCEL: restaurar rama inicial
-        if declare -F git_restore_branch_safely >/dev/null; then
-            git_restore_branch_safely "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}"
-        else
-            echo "⚠️  Finalizando script. Volviendo a ${DEVTOOLS_PROMOTE_FROM_BRANCH:-}..."
-            git checkout "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}" >/dev/null 2>&1 || true
+        # 2) preguntar borrado de rama origen (universal) si aplica
+        if declare -F maybe_delete_source_branch >/dev/null 2>&1; then
+            maybe_delete_source_branch "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}"
         fi
+
+        exit 0
     fi
-    exit $exit_code
+
+    # FALLO/CANCEL: restaurar rama inicial
+    if declare -F git_restore_branch_safely >/dev/null 2>&1; then
+        git_restore_branch_safely "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}"
+    else
+        ui_warn "Finalizando script. Volviendo a ${DEVTOOLS_PROMOTE_FROM_BRANCH:-}..."
+        git checkout "${DEVTOOLS_PROMOTE_FROM_BRANCH:-}" >/dev/null 2>&1 || true
+    fi
+
+    exit "$exit_code"
 }
-# Registramos el trap
+
 trap 'cleanup_on_exit' EXIT INT TERM
 
 # ==============================================================================
-# 2. PARSEO DE FLAGS Y SETUP DE IDENTIDAD
+# 2. PARSEO DE ARGUMENTOS
 # ==============================================================================
+# Soporte simple para flags globales antes del comando
+while [[ "$1" == -* ]]; do
+    case "$1" in
+        -y|--yes)
+            export DEVTOOLS_ASSUME_YES=1
+            shift
+            ;;
+        --debug)
+            export DEVTOOLS_DEBUG=1
+            set -x
+            shift
+            ;;
+        *)
+            echo "Opción desconocida: $1"
+            exit 1
+            ;;
+    esac
+done
 
-# Nota: El parseo de -y/--yes ya se realizó en la sección 0.1 y se hizo shift.
-# Mantenemos este bloque por si hay lógica adicional o para setup de SSH.
+TARGET_ENV="$1"
 
-# Si no estamos en modo simple, cargamos las llaves SSH antes de empezar
-# EXCEPCIÓN: `_dev-monitor` debe ser no-interactivo (puede correr con nohup/sin TTY).
-# Doctor y _dev-monitor deben ser no-interactivos (sin identidad/SSH)
-if [[ "${SIMPLE_MODE:-false}" == "false" && "${1:-}" != "_dev-monitor" && "${1:-}" != "doctor" ]]; then
-    setup_git_identity
+# Validar argumento requerido
+if [[ -z "$TARGET_ENV" ]]; then
+    ui_header "Git Promote - Gestor de Ciclo de Vida"
+    echo "Uso: git promote [-y | --yes] [TARGET]"
+    echo ""
+    echo "Targets disponibles:"
+    echo "  dev                 : Promocionar a DEV (Lab)"
+    echo "  staging             : Promocionar a STAGING (Release Candidate)"
+    echo "  prod                : Promocionar a PROD (Live)"
+    echo "  sync                : Sincronización inteligente (Smart Sync)"
+    echo "  dev-update          : Integrar cambios a dev-update (rama de trabajo)"
+    echo "  hotfix              : Iniciar flujo de hotfix"
+    echo "  doctor              : Verificar estado del repo"
+    exit 1
 fi
 
 # ==============================================================================
-# 3. PARSEO DE COMANDOS (ROUTER)
+# 3. MENÚ DE SEGURIDAD UNIVERSAL (OBLIGATORIO)
 # ==============================================================================
+# Regla: "Ante la duda, pregunta".
+# Este menú aparece SIEMPRE (excepto en doctor/diagnóstico), obligando a elegir
+# entre Fast-Forward, Merge o Force.
+# Esto define la variable DEVTOOLS_PROMOTE_STRATEGY que usarán los workflows.
 
-TARGET_ENV="${1:-}"
-
-# Landing policy por comando (opcional, legacy police mode)
-if [[ "$TARGET_ENV" == "dev" ]]; then
-    # Policía: siempre caer en dev aunque exit!=0 (si se requiere lógica estricta antigua)
-    # Nota: La nueva cleanup_on_exit prioriza éxito/fallo genérico,
-    # pero dev puede configurarse aquí si fuera necesario.
-    export DEVTOOLS_LAND_ON_EXIT_BRANCH="dev"
-fi
-
-# --- Guardias de Seguridad y Confirmación ---
-if [[ -n "$TARGET_ENV" && "$TARGET_ENV" != "_dev-monitor" ]]; then
-
-    # Dev monitor (admin) no requiere repo limpio (solo observación), salvo modo directo
-    if [[ "$TARGET_ENV" == "dev" && "${DEVTOOLS_PROMOTE_DEV_DIRECT:-0}" != "1" ]]; then
-        :
-    # Doctor no requiere confirmación ni guardias
-    elif [[ "$TARGET_ENV" == "doctor" ]]; then
-        :
-    else
+if [[ "${TARGET_ENV:-}" != "doctor" ]]; then
+    export DEVTOOLS_PROMOTE_STRATEGY
     
-    # 1. Validar que el working tree esté limpio antes de cualquier operación destructiva
-    if declare -F ensure_clean_git_or_die >/dev/null; then
-        ensure_clean_git_or_die
-    else
-        ensure_clean_git # Fallback a git-ops.sh si checks.sh no está cargado
-    fi
-    fi
+    # Función definida en lib/core/utils.sh que muestra el menú A/B/C con emojis
+    DEVTOOLS_PROMOTE_STRATEGY="$(promote_choose_strategy_or_die)"
 
-    # 2. Confirmación Obligatoria (Anti-errores)
-    # Dev monitor (admin) NO es destructivo por defecto → no mostrar warning global
-    if [[ "$TARGET_ENV" == "dev" && "${DEVTOOLS_PROMOTE_DEV_DIRECT:-0}" != "1" ]]; then
-        :
-    elif [[ "$TARGET_ENV" == "doctor" ]]; then
-        :
-    elif [[ "$DEVTOOLS_AUTO_APPROVE" == "false" ]]; then
+    # Confirmación extra para la opción ☢️ (Solo si no estamos en modo --yes)
+    if [[ "$DEVTOOLS_PROMOTE_STRATEGY" == "force" && "${DEVTOOLS_ASSUME_YES:-0}" != "1" ]]; then
         echo
-        log_warn "⚠️  OPERACIÓN DE PROMOCIÓN APLASTANTE (Destructive Promotion)"
-        echo "Contenido de la rama destino '$TARGET_ENV' será reemplazado por '${DEVTOOLS_PROMOTE_FROM_BRANCH:-}'."
-        echo "Esto ejecutará un 'reset --hard' y 'push --force-with-lease' en el remoto."
-        echo
-        if ! ask_yes_no "¿Estás seguro de que deseas continuar?"; then
-            log_info "Operación cancelada. No se realizaron cambios."
-            exit 0
+        log_warn "☢️ Elegiste FORCE UPDATE. Esto puede reescribir historia en ramas remotas."
+        if ! ask_yes_no "¿Confirmas continuar con FORCE UPDATE?"; then
+            die "Abortado por seguridad."
         fi
     fi
+    
+    # Feedback visual de la elección
+    if [[ "${DEVTOOLS_ASSUME_YES:-0}" != "1" ]]; then
+        log_info "✅ Estrategia seleccionada: $DEVTOOLS_PROMOTE_STRATEGY"
+    fi
 fi
+
+# ==============================================================================
+# 4. ENRUTAMIENTO (Router)
+# ==============================================================================
 
 case "$TARGET_ENV" in
-    doctor)
-        # Doctor: checks rápidos de coherencia (no destructivo)
-        failures=0
-        strict="${DEVTOOLS_DOCTOR_STRICT:-0}"
-        echo
-        echo "🩺 devtools doctor"
-
-        # A) dev-update: no debe tener el log viejo
-        du="${DEVTOOLS_ROOT}/lib/promote/workflows/dev-update.sh"
-        if [[ -f "$du" ]] && grep -q "Limpiando rama fuente ya integrada" "$du"; then
-            echo "❌ dev-update.sh: aún contiene limpieza vieja"
-            failures=$((failures+1))
-        else
-            echo "✅ dev-update.sh: OK (sin limpieza vieja)"
-        fi
-
-        # B) dev-update: debe invocar maybe_delete_source_branch
-        if [[ -f "$du" ]] && ! grep -q "maybe_delete_source_branch" "$du"; then
-            echo "❌ dev-update.sh: NO invoca maybe_delete_source_branch"
-            failures=$((failures+1))
-        else
-            echo "✅ dev-update.sh: usa maybe_delete_source_branch"
-        fi
-
-        # C) promote: landing override presente
-        if ! grep -q "DEVTOOLS_LAND_ON_SUCCESS_BRANCH" "$0"; then
-            echo "❌ git-promote: falta DEVTOOLS_LAND_ON_SUCCESS_BRANCH"
-            failures=$((failures+1))
-        else
-            echo "✅ git-promote: landing override OK"
-        fi
-
-        # D) --yes => assume yes
-        if ! grep -q "export DEVTOOLS_ASSUME_YES=1" "$0"; then
-            echo "❌ git-promote: --yes no propaga DEVTOOLS_ASSUME_YES=1"
-            failures=$((failures+1))
-        else
-            echo "✅ git-promote: --yes non-interactive OK"
-        fi
-
-       # E) guard canónico default correcto (debe ser: dev + feature/dev-update)
-        if grep -q 'DEVTOOLS_CANONICAL_REFS=(dev feature/dev-update)' "$0"; then
-            echo "✅ guard canónico: defaults OK (dev + feature/dev-update)"
-        else
-            echo "❌ guard canónico: defaults NO son (dev + feature/dev-update)"
-            failures=$((failures+1))
-        fi
-
-        echo
-        if [[ "$failures" -eq 0 ]]; then
-            echo "✅ Doctor OK"
-            exit 0
-        fi
-        echo "⚠️  Doctor encontró $failures problema(s)."
-        [[ "$strict" == "1" ]] && exit 1 || exit 0
-        ;;
     dev)
-        # ✅ Si `git promote dev` termina en éxito, aterrizamos en dev
         export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="dev"
+        source "${PROMOTE_LIB}/workflows/to-dev.sh"
         promote_to_dev
         ;;
-    _dev-monitor)
-        promote_dev_monitor "${2:-}" "${3:-}"
-        ;;
+
     staging)
+        export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="staging"
+        source "${PROMOTE_LIB}/workflows/to-staging.sh"
         promote_to_staging
         ;;
+
     prod)
+        # prod = entorno; la rama real es main
+        export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="main"
+        source "${PROMOTE_LIB}/workflows/to-prod.sh"
         promote_to_prod
         ;;
+
     sync)
+        # Cargar módulo sync (macro)
+        source "${PROMOTE_LIB}/workflows/sync.sh"
         promote_sync_all
         ;;
+
     dev-update|feature/dev-update)
-        # Permite pasar una rama opcional como segundo argumento
-        export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="feature/dev-update"
-        promote_dev_update_force_sync "${2:-}"
+        # Workflow de utilidad para squash local hacia la rama de integración
+        # Cargar módulo dev-update (asumimos que existe o está en to-dev utils)
+        source "${PROMOTE_LIB}/workflows/dev-update.sh"
+        
+        # En éxito: aterrizar en dev-update (rama promovida)
+        export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="dev-update"
+        
+        # Si NO se pasó rama fuente, usamos la rama actual (DEVTOOLS_PROMOTE_FROM_BRANCH)
+        # Esto hace que: `git promote dev-update` (o `git promote feature/dev-update`) funcione sin sorpresas.
+        src_branch="${2:-}"
+        if [[ -z "${src_branch:-}" ]]; then
+            src_branch="${DEVTOOLS_PROMOTE_FROM_BRANCH:-}"
+            log_info "ℹ️  No se indicó rama fuente. Usando tu rama actual: ${src_branch}"
+        fi
+
+        # Guardias: evitar intentos absurdos (fuente inválida)
+        case "${src_branch:-}" in
+            ""|"(detached)"|dev-update|dev|main|staging)
+                die "⛔ Rama fuente inválida para dev-update: '${src_branch}'. Usa una rama de trabajo (no protegida) como fuente."
+                ;;
+        esac
+
+        promote_dev_update_squash "${src_branch}"
         ;;
+
     feature/*)
-        # UX: permitir "git promote feature/mi-rama" para aplastar esa rama
-        # dentro de feature/dev-update (y pushear el resultado al remoto).
-        export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="feature/dev-update"
-        promote_dev_update_force_sync "$TARGET_ENV"
+        # Alias directo para squashear una feature
+        source "${PROMOTE_LIB}/workflows/dev-update.sh"
+        # En éxito: aterrizar en dev-update (rama promovida)
+        export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="dev-update"
+        promote_dev_update_squash "$TARGET_ENV"
         ;;
+
     hotfix)
-        create_hotfix
+        source "${PROMOTE_LIB}/workflows/hotfix.sh"
+        promote_hotfix_start "${2:-}"
         ;;
-    hotfix-finish)
-        finish_hotfix
+
+    doctor)
+        source "${LIB_DIR}/checks/doctor.sh"
+        run_doctor
         ;;
-    *) 
-        echo "Uso: git promote [-y | --yes] [dev | staging | prod | sync | feature/dev-update | hotfix | hotfix-finish | doctor]"
-        echo
-        echo "Comandos disponibles:"
-        echo "  dev                 : Monitor estricto (admin) del estado de 'dev' (PRs/CI). No crea PR."
-        echo "                        Bypass: DEVTOOLS_BYPASS_STRICT=1 (emergencia)."
-        echo "                        Modo directo (destructivo): DEVTOOLS_PROMOTE_DEV_DIRECT=1"
-        echo "  staging             : Promueve dev -> staging (gestiona Tags/RC)"
-        echo "  prod                : Promueve staging -> main (gestiona Release Tags)"
-        echo "  sync                : Sincronización inteligente (Smart Sync)"
-        echo "  feature/dev-update  : Aplasta (squash) una rama dentro de feature/dev-update"
-        echo "  feature/<rama>      : Alias de lo anterior (squash + push a feature/dev-update)"
-        echo "  hotfix              : Crea una rama de hotfix desde main"
-        echo "  hotfix-finish       : Finaliza e integra el hotfix"
-        echo "  doctor              : Verifica la salud y coherencia del toolset"
-        echo
-        echo "Opciones:"
-        echo "  -y, --yes           : Salta las confirmaciones de seguridad (Modo no-interactivo)"
-        exit 1
+
+    *)
+        # Si es una rama (local o remota), la tratamos como fuente hacia dev-update (flujo único).
+        if git show-ref --verify --quiet "refs/heads/${TARGET_ENV}" || git show-ref --verify --quiet "refs/remotes/origin/${TARGET_ENV}"; then
+            source "${PROMOTE_LIB}/workflows/dev-update.sh"
+            export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="dev-update"
+            promote_dev_update_apply "${TARGET_ENV}"
+        else
+            ui_error "Target no reconocido: $TARGET_ENV"
+            exit 1
+        fi
         ;;
 esac
+
+exit 0

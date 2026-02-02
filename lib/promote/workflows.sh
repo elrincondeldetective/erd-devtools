@@ -13,14 +13,12 @@
 # - sync.sh: promote_sync_all
 # - dev-update.sh: promote_dev_update_squash
 # - to-dev.sh: promote_to_dev
-# - to-staging.sh: promote_to_staging
 # - to-prod.sh: promote_to_prod
 # - hotfix.sh: create_hotfix / finish_hotfix
 
 # Dependencias implícitas (deben ser cargadas por el script principal antes de este):
 # - utils.sh, config.sh, git-ops.sh, release-flow.sh
 # - promote/version-strategy.sh
-# - promote/golden-sha.sh
 # - promote/gitops-integration.sh
 
 # ==============================================================================
