@@ -20,11 +20,11 @@ ensure_gh_cli() {
 }
 
 # ==============================================================================
-# 1.1 FASE 3 (NUEVO): HELPERS PARA MERGE AUTOMÁTICO Y GOLDEN SHA
+# 1.1 HELPERS PARA MERGE AUTOMÁTICO
 # ==============================================================================
 # Objetivo:
 # - Esperar de forma robusta a que un PR quede mergeado cuando usamos `gh pr merge --auto`.
-# - Obtener el mergeCommit SHA (golden candidate).
+# - Obtener el SHA del merge commit.
 #
 # Variables (defaults pueden venir de core/config.sh):
 # - DEVTOOLS_PR_MERGE_TIMEOUT_SECONDS (default 900)
