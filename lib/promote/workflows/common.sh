@@ -109,27 +109,28 @@ maybe_delete_source_branch() {
         return 0
     fi
 
-    # 1. EXCEPCIONES CRÍTICAS: Nunca ofrecer borrar estas ramas
+    # 1) PROTEGIDAS: nunca borrar
     case "$branch" in
-        main|dev|staging|master|feature/dev-update)
+        dev|staging|main)
             log_info "📌 Rama fuente '$branch' es una excepción protegida. Manteniéndola."
             return 0
             ;;
     esac
 
-    # 2. FILTRO DE PATRÓN: Solo ofrecer borrado para ramas feature/
-    if [[ ! "$branch" =~ ^feature/ ]]; then
-        return 0
-    fi
-
-    # 3. INTERACCIÓN (Default: Sí)
+    # 2) INTERACCIÓN UNIVERSAL (Default: Sí)
     echo
     log_warn "🚀 Promoción completada con éxito."
-    if ask_yes_no "¿Deseas borrar la rama fuente '$branch' (local y remoto)?"; then
+
+    if ask_yes_no "¿Borrar rama origen '${branch}' (local y remoto)?"; then
+        local cur
+        cur="$(git branch --show-current 2>/dev/null || echo "")"
+
         log_info "🔥 Eliminando rama local: $branch"
-        # Borrado forzado (D) porque ya estamos en la rama destino y el reset-hard 
-        # garantiza que el contenido está a salvo en la rama destino.
-        git branch -D "$branch" || log_warn "No se pudo borrar la rama local '$branch'."
+        if [[ "$cur" == "$branch" ]]; then
+            log_warn "No puedo borrar la rama local '$branch' porque está activa. (Sigue en destino y reintenta.)"
+        else
+            git branch -D "$branch" || log_warn "No se pudo borrar la rama local '$branch'."
+        fi
         
         log_info "🔥 Eliminando rama remota: origin/$branch"
         git push origin --delete "$branch" || log_warn "No se pudo borrar la rama remota en origin."

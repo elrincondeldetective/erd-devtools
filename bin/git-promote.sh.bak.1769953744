@@ -7,13 +7,6 @@
 set -e
 
 # ==============================================================================
-# 0.0 DEFAULTS (set -u safe)
-# ==============================================================================
-# Si no está seteada, por defecto NO forzamos guard canónico extra
-export DEVTOOLS_FORCE_CANONICAL_REFS="${DEVTOOLS_FORCE_CANONICAL_REFS:-0}"
-export DEVTOOLS_SKIP_CANONICAL_CHECK="${DEVTOOLS_SKIP_CANONICAL_CHECK:-0}"
-
-# ==============================================================================
 # 0. BOOTSTRAP & CARGA DE LIBRERÍAS
 # ==============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -122,7 +115,8 @@ if [[ -z "$TARGET_ENV" ]]; then
     echo "  staging             : Promocionar a STAGING (Release Candidate)"
     echo "  prod                : Promocionar a PROD (Live)"
     echo "  sync                : Sincronización inteligente (Smart Sync)"
-    echo "  dev-update          : Integrar cambios a dev-update (rama de trabajo)"
+    echo "  dev-update          : Aplasta (squash) una rama dentro de dev-update"
+    echo "  feature/dev-update  : (DEPRECADO) alias de dev-update"
     echo "  hotfix              : Iniciar flujo de hotfix"
     echo "  doctor              : Verificar estado del repo"
     exit 1
@@ -163,20 +157,19 @@ fi
 
 case "$TARGET_ENV" in
     dev)
-        export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="dev"
+        # Cargar módulo to-dev
         source "${PROMOTE_LIB}/workflows/to-dev.sh"
         promote_to_dev
         ;;
 
     staging)
-        export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="staging"
+        # Cargar módulo to-staging
         source "${PROMOTE_LIB}/workflows/to-staging.sh"
         promote_to_staging
         ;;
 
     prod)
-        # prod = entorno; la rama real es main
-        export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="main"
+        # Cargar módulo to-prod
         source "${PROMOTE_LIB}/workflows/to-prod.sh"
         promote_to_prod
         ;;
@@ -200,17 +193,17 @@ case "$TARGET_ENV" in
         src_branch="${2:-}"
         if [[ -z "${src_branch:-}" ]]; then
             src_branch="${DEVTOOLS_PROMOTE_FROM_BRANCH:-}"
-            log_info "ℹ️  No se indicó rama fuente. Usando tu rama actual: ${src_branch}"
+            log_info "ℹ️  No se indicó rama fuente. Usando rama actual: ${src_branch}"
         fi
 
         # Guardias: evitar intentos absurdos (fuente inválida)
         case "${src_branch:-}" in
-            ""|"(detached)"|dev-update|dev|main|staging)
-                die "⛔ Rama fuente inválida para dev-update: '${src_branch}'. Usa una rama de trabajo (no protegida) como fuente."
+            ""|"(detached)"|dev-update|dev|main|staging|prod)
+                die "⛔ Rama fuente inválida para dev-update: '${src_branch}'. Usa: git promote dev-update feature/<rama>"
                 ;;
         esac
 
-        promote_dev_update_squash "${src_branch}"
+        promote_dev_update_apply "${src_branch}"
         ;;
 
     feature/*)
@@ -218,7 +211,7 @@ case "$TARGET_ENV" in
         source "${PROMOTE_LIB}/workflows/dev-update.sh"
         # En éxito: aterrizar en dev-update (rama promovida)
         export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="dev-update"
-        promote_dev_update_squash "$TARGET_ENV"
+        promote_dev_update_apply "$TARGET_ENV"
         ;;
 
     hotfix)
