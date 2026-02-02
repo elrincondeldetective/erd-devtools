@@ -164,19 +164,20 @@ fi
 
 case "$TARGET_ENV" in
     dev)
-        # Cargar módulo to-dev
+        export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="dev"
         source "${PROMOTE_LIB}/workflows/to-dev.sh"
         promote_to_dev
         ;;
 
     staging)
-        # Cargar módulo to-staging
+        staging)
+        export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="staging"
         source "${PROMOTE_LIB}/workflows/to-staging.sh"
         promote_to_staging
         ;;
 
     prod)
-        # Cargar módulo to-prod
+        export DEVTOOLS_LAND_ON_SUCCESS_BRANCH="prod"
         source "${PROMOTE_LIB}/workflows/to-prod.sh"
         promote_to_prod
         ;;
