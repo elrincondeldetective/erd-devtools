@@ -190,41 +190,43 @@ promote_dev_monitor() {
                     echo "   - Se ignorarán conflictos (tu código gana)."
                     echo "   - El PR se cerrará automáticamente."
                     echo
+
                     local confirm
                     confirm="$(ui_read_option "   ¿ESTÁS SEGURO? Escribe 'force' para proceder > ")"
-                    
+
                     if [[ "$confirm" == "force" ]]; then
                         export DEVTOOLS_TOUCHED_DEV=1
                         log_info "🔥 Ejecutando FORCE UPDATE (core): update_branch_to_sha_with_strategy dev <- HEAD (force-with-lease)..."
-                        
-                            local head_sha new_sha rc
-                            head_sha="$(git rev-parse HEAD 2>/dev/null || true)"
-                            [[ -n "${head_sha:-}" ]] || { log_error "No pude resolver HEAD SHA."; break; }
 
-                            new_sha="$(update_branch_to_sha_with_strategy "dev" "$head_sha" "origin" "force")"
-                            rc=$?
+                        local head_sha new_sha rc
+                        head_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+                        if [[ -z "${head_sha:-}" ]]; then
+                            log_error "No pude resolver HEAD SHA."
+                            break
+                        fi
 
-                            if [[ "$rc" -eq 0 && -n "${new_sha:-}" ]]; then
-                                log_success "✅ 'dev' ha sido actualizado (force-with-lease). SHA: ${new_sha:0:7}"
+                        new_sha="$(update_branch_to_sha_with_strategy "dev" "$head_sha" "origin" "force")"
+                        rc=$?
 
-                                something_merged=1
+                        if [[ "$rc" -eq 0 && -n "${new_sha:-}" ]]; then
+                            log_success "✅ 'dev' ha sido actualizado (force-with-lease). SHA: ${new_sha:0:7}"
+                            something_merged=1
 
-                                # Limpieza: Cerramos el PR ya que hicimos bypass
-                                log_info "🧹 Limpiando PR #$pr_id..."
-                                gh pr close "$pr_id" --delete-branch >/dev/null 2>&1 || true
+                            # Limpieza: Cerramos el PR ya que hicimos bypass
+                            log_info "🧹 Limpiando PR #$pr_id..."
+                            gh pr close "$pr_id" --delete-branch >/dev/null 2>&1 || true
 
-                                # STREAMING: Ver logs inmediatamente después del force update
-                                stream_branch_activity "dev" "Post-Force-Update Build"
-
-                                break
-                            else
-                                log_error "❌ Falló el force update (rc=$rc). Verifica permisos/red."
-                            fi
+                            # STREAMING: Ver logs inmediatamente después del force update
+                            stream_branch_activity "dev" "Post-Force-Update Build"
+                            break
+                        else
+                            log_error "❌ Falló el force update (rc=$rc). Verifica permisos/red."
                         fi
                     else
                         log_info "🧯 Operación cancelada."
                     fi
                     ;;
+
                     
                 s|S)
                     log_info "⏭️  PR #$pr_id Saltado."
