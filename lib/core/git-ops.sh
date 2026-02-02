@@ -461,35 +461,52 @@ git_remote_url() {
 
 __extract_host_from_git_url() {
     local url="$1"
-    # normalizar protocolos
     url="${url#ssh://}"
     url="${url#https://}"
     url="${url#http://}"
-    # quitar user@ si existe
     [[ "$url" == *@* ]] && url="${url#*@}"
-    # host hasta ':' o '/'
     echo "${url%%[:/]*}"
 }
 
+__resolve_ssh_hostname() {
+    local host="$1"
+    command -v ssh >/dev/null 2>&1 || return 1
+    ssh -G "$host" 2>/dev/null | awk 'tolower($1)=="hostname" {print $2; exit}'
+}
+
 ensure_origin_is_github_com_or_die() {
-    local url host
+    local url host resolved=""
     url="$(git_remote_url origin)"
+
     if [[ -z "${url:-}" ]]; then
         if declare -F die >/dev/null 2>&1; then
-        die "❌ Error: no existe el remoto 'origin'. Configúralo antes de promover."
+            die "❌ Error: no existe el remoto 'origin'. Configúralo antes de promover."
         fi
         echo "❌ Error: no existe el remoto 'origin'." >&2
         exit 1
     fi
 
     host="$(__extract_host_from_git_url "$url")"
-    if [[ "$host" != "github.com" ]]; then
-        echo >&2
-        echo "❌ Error: tu remoto 'origin' no apunta a github.com." >&2
-        echo "   URL actual: $url" >&2
-        echo "💡 Arreglo rápido (ejemplo):" >&2
-        echo "   git remote set-url origin git@github.com:OWNER/REPO.git" >&2
-        echo >&2
-        exit 1
+
+    # Caso directo: host literal github.com (HTTPS o SSH normal)
+    if [[ "$host" == "github.com" ]]; then
+        return 0
     fi
+
+    # Caso alias SSH: permitir SOLO si ssh -G resuelve HostName github.com
+    resolved="$(__resolve_ssh_hostname "$host" || true)"
+    if [[ "$resolved" == "github.com" ]]; then
+        return 0
+    fi
+
+    echo >&2
+    echo "❌ Error: tu remoto 'origin' no apunta a github.com." >&2
+    echo "   URL actual: $url" >&2
+    if [[ -n "${resolved:-}" ]]; then
+        echo "   Host resuelto por SSH: $resolved" >&2
+    fi
+    echo "💡 Arreglo rápido (ejemplo):" >&2
+    echo "   git remote set-url origin git@github.com:OWNER/REPO.git" >&2
+    echo >&2
+    exit 1
 }
