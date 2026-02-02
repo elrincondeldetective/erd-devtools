@@ -118,15 +118,21 @@ if [[ -z "$TARGET_ENV" ]]; then
     echo "Uso: git promote [-y | --yes] [TARGET]"
     echo ""
     echo "Targets disponibles:"
-    echo "  dev                 : Promocionar a DEV (Lab)"
-    echo "  staging             : Promocionar a STAGING (Release Candidate)"
-    echo "  prod                : Promocionar a PROD (Live)"
-    echo "  sync                : Sincronización inteligente (Smart Sync)"
-    echo "  dev-update          : Integrar cambios a dev-update (rama de trabajo)"
-    echo "  hotfix              : Iniciar flujo de hotfix"
-    echo "  doctor              : Verificar estado del repo"
+    echo "  dev                 : Promocionar a DEV (actualiza origin/dev)"
+    echo "  staging             : Promocionar a STAGING (dev -> origin/staging)"
+    echo "  prod                : Promocionar a PROD (staging -> origin/main)"
+    echo "  sync                : Macro dev-update -> dev -> staging -> prod (requiere estar en dev-update)"
+    echo "  dev-update [src]    : Integrar rama fuente hacia origin/dev-update (o usa: git promote <rama>)"
+    echo "  hotfix [name|finish]: Crear/finalizar hotfix (hotfix/* -> main + dev)"
+    echo "  doctor              : Verificar estado del repo (diagnóstico)"
+    echo ""
+    echo "Notas:"
+    echo "  - Menú de seguridad ES OBLIGATORIO (excepto doctor)."
+    echo "  - Si no hay TTY/UI (CI), define:"
+    echo "      DEVTOOLS_PROMOTE_STRATEGY=merge-theirs|ff-only|merge|force"
     exit 1
 fi
+
 
 # ==============================================================================
 # 3. PRE-FLIGHT DE SEGURIDAD (OBLIGATORIO) + MENÚ UNIVERSAL (OBLIGATORIO)
