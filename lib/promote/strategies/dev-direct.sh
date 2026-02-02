@@ -56,14 +56,14 @@ promote_dev_direct_monitor() {
         log_success "✅ Este repo no usa release-please."
     fi
 
-    # 2. Determinar el SHA Final (GOLDEN CANDIDATE)
+    # 2. Determinar el SHA Final (SHA final remoto)
     # Si hubo bot merge, el HEAD es nuevo (rp_merge_sha). Si no, es el pre_bot_sha.
     # Obtenemos la verdad absoluta desde el remoto.
     local final_dev_sha
     final_dev_sha="$(__remote_head_sha "dev" "origin")"
     
     if [[ -z "${final_dev_sha:-}" ]]; then
-        log_error "No pude resolver origin/dev final para capturar GOLDEN_SHA."
+        log_error "No pude resolver origin/dev final para capturar SHA final."
         return 1
     fi
 
@@ -76,29 +76,17 @@ promote_dev_direct_monitor() {
         log_success "✅ Sin build: este repo no tiene workflow build-push."
     fi
 
-    # 4. Persistir GOLDEN_SHA
-    # Este es el único punto de verdad. Lo que llegó aquí pasó Bot y Build.
-    write_golden_sha "$final_dev_sha" "source=origin/dev post_release_please=${post_rp} feature_branch=${feature_branch:-none} rp_pr=${rp_pr:-none}" || true
-    log_success "✅ GOLDEN_SHA capturado: $final_dev_sha"
-
     # GitOps (no invasivo)
     local changed_paths
     changed_paths="$(git diff --name-only "${final_dev_sha}~1..${final_dev_sha}" 2>/dev/null || true)"
     maybe_trigger_gitops_update "dev" "$final_dev_sha" "$changed_paths"
 
-    # 5. Issues pendientes (visibilidad)
     echo
-    echo "════════════════════════════════════════════════════"
-    echo "📌 ISSUES PENDIENTES (Para continuar trabajando)"
-    echo "════════════════════════════════════════════════════"
-    if command -v gh >/dev/null 2>&1; then
-        GH_PAGER=cat gh issue list --state open --limit 5 --json number,title,url --template \
-        '{{range .}}• [#{{.number}}] {{.title}} ({{.url}}){{"\n"}}{{end}}' 2>/dev/null || log_warn "No pude listar issues."
-    fi
-    echo "════════════════════════════════════════════════════"
+    log_success "✅ DEV listo. SHA final: ${final_dev_sha:0:7}"
+    log_info "🔎 Confirmación visual (git ls-remote --heads origin dev):"
+    git ls-remote --heads origin dev 2>/dev/null || true
+    echo
 
-    banner "✅ DEV LISTO"
-    echo "SHA a promover: $final_dev_sha"
     echo "👉 Siguiente paso: git promote staging"
     return 0
 }
@@ -157,16 +145,26 @@ promote_to_dev_direct() {
 
     # Si por alguna razón el reset no generó diferencias con el remoto (raro en aplastante)
     if git diff origin/dev..HEAD --quiet; then
-        log_warn "No hay cambios para promover (destino ya es idéntico a fuente)."
+        log_warn "No hay cambios para promover (origin/dev ya coincide con la fuente)."
+
         local current_dev_sha
         current_dev_sha="$(__remote_head_sha "dev" "origin")"
-        write_golden_sha "$current_dev_sha" "source=origin/dev post_release_please=0 feature_branch=${feature_branch} note=no_changes" || true
-        log_success "✅ GOLDEN_SHA capturado (sin cambios): $current_dev_sha"
+        if [[ -z "${current_dev_sha:-}" ]]; then
+            git fetch origin dev >/dev/null 2>&1 || true
+            current_dev_sha="$(git rev-parse origin/dev 2>/dev/null || true)"
+        fi
+
+        echo
+        log_info "🔎 Confirmación visual (git ls-remote --heads origin dev):"
+        git ls-remote --heads origin dev 2>/dev/null || true
+        echo
+
+        [[ -n "${current_dev_sha:-}" ]] && log_info "✅ origin/dev @${current_dev_sha:0:7}"
         echo "👉 Siguiente paso: git promote staging"
         # Aterrizaje obligatorio en dev según requerimiento
         exit 0
     fi
-
+    
     # --- NO-REGRESIÓN: Preservamos la creación de commit de integración si se desea ---
     # Nota: En reset --hard el commit ya existe, pero si el usuario quiere un commit de "promote" 
     # encima para trazabilidad, se puede hacer, aunque lo estándar en reset es usar el de la fuente.

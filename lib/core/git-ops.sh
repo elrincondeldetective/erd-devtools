@@ -85,11 +85,11 @@ detect_workspace_root() {
 }
 
 # ==============================================================================
-# 2.1 FASE 3 (NUEVO): HELPERS PARA GOLDEN SHA / RAMAS TRACKING
+# 2.1 HELPERS PARA TRACKING DE RAMAS
 # ==============================================================================
 # Objetivo:
 # - Poder sincronizar ramas locales con su remoto aunque NO existan localmente.
-# - Evitar estados "a medias" cuando el SHA golden se toma de origin/<branch>.
+# - Evitar estados "a medias" cuando la referencia canónica viene de origin/<branch>.
 branch_exists_remote() {
     local branch="$1"
     local remote="${2:-origin}"
@@ -140,7 +140,7 @@ ensure_local_tracking_branch() {
     return 0
 }
 
-# Sincroniza la rama local para que coincida EXACTAMENTE con el remoto (golden truth)
+# Sincroniza la rama local para que coincida EXACTAMENTE con el remoto (verdad canónica)
 sync_branch_hard_to_remote() {
     local branch="$1"
     local remote="${2:-origin}"
