@@ -47,7 +47,7 @@
       "echo '🔍 Escaneando scripts y actualizando alias de Git...'",
       "# Determinamos dónde buscar dependiendo de si estamos en el root o dentro del submódulo",
       "if [[ \"$(basename \"$root\")\" == \".devtools\" ]]; then SEARCH_DIR=\"$root\"; else SEARCH_DIR=\"$root/.devtools\"; fi",
-      "for tool in acp gp rp promote feature pr lim; do",
+      "for tool in acp gp rp promote feature pr lim devtools-update; do",
       "  # Busca el archivo .sh recursivamente desde el directorio correcto",
       "  script_path=$(find \"$SEARCH_DIR\" -name \"git-$tool.sh\" -print -quit 2>/dev/null)",
       "  if [[ -n \"$script_path\" ]]; then",
