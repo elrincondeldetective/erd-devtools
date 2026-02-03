@@ -109,7 +109,7 @@ promote_dev_monitor() {
 
     # 1) Habilitar auto-merge SOLO cuando ya está aprobado
     log_info "🤖 PR aprobado. Habilitando auto-merge (checks + merge)..."
-    GH_PAGER=cat gh pr merge "$feature_pr" --auto --squash
+    GH_PAGER=cat gh pr merge "$feature_pr" --auto --squash || log_warn "No se pudo activar auto-merge (¿falta config?). Esperando merge manual..."
 
     # 2) Esperar merge real
     log_info "🔄 Esperando merge del PR #$feature_pr..."
@@ -208,7 +208,7 @@ promote_to_dev() {
 
     banner "🤖 PR LISTO (#$pr_number) -> dev"
     echo "⏳ Habilitando auto-merge (espera aprobación + checks)..."
-    GH_PAGER=cat gh pr merge "$pr_number" --auto --squash
+    GH_PAGER=cat gh pr merge "$pr_number" --auto --squash || log_warn "No se pudo activar auto-merge. El monitor esperará el merge manual."
 
     # Default: async (libera terminal).
     # [NUEVO] Si no hay flags de borrado y es TTY, forzamos modo SYNC para poder preguntar al final.
