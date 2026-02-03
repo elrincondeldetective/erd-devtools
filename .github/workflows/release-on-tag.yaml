@@ -1,5 +1,5 @@
 # /webapps/erd-ecosystem/.devtools/.github/workflows/release-on-tag.yaml
-name: Publish GitHub Release (Tags)
+name: Publish GitHub Release (Tags) [DEPRECATED - tags from Actions may not trigger]
 
 on:
   push:
