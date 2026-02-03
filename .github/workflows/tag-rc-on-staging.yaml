@@ -94,3 +94,36 @@ jobs:
           git tag -a "$TAG" -m "Release Candidate $TAG"
           git push origin "$TAG"
 
+      - name: Read tag message (release notes)
+        if: ${{ steps.rc_guard.outputs.skip != 'true' }}
+        id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ steps.tag_calc.outputs.new_tag }}"
+
+          # asegurar tags disponibles y leer el contenido del tag anotado
+          git fetch --tags --force
+          body="$(git for-each-ref "refs/tags/${tag}" --format='%(contents)')"
+          if [ -z "$body" ]; then
+            body="Release ${tag}"
+          fi
+
+          {
+            echo "body<<'EOF'"
+            echo "$body"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "prerelease=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release (RC)
+        if: ${{ steps.rc_guard.outputs.skip != 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.notes.outputs.tag }}
+          body: ${{ steps.notes.outputs.body }}
+          prerelease: true
+          generate_release_notes: false
+          draft: false
