@@ -70,3 +70,38 @@ jobs:
             git tag -a "$TAG_NAME" -m "Release $TAG_NAME"
             git push origin "$TAG_NAME"
           fi
+
+      - name: Read tag message (release notes)
+        if: ${{ steps.final_guard.outputs.skip != 'true' }}
+        id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(cat VERSION | tr -d '[:space:]')"
+          tag="v$VERSION"
+
+          # asegurar tags disponibles y leer el contenido del tag anotado
+          git fetch --tags --force
+          body="$(git for-each-ref "refs/tags/${tag}" --format='%(contents)')"
+          if [ -z "$body" ]; then
+            body="Release ${tag}"
+          fi
+
+          {
+            echo "body<<'EOF'"
+            echo "$body"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "prerelease=false" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release (Final)
+        if: ${{ steps.final_guard.outputs.skip != 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.notes.outputs.tag }}
+          body: ${{ steps.notes.outputs.body }}
+          prerelease: false
+          generate_release_notes: false
+          draft: false
