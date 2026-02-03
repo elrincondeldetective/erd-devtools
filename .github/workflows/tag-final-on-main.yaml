@@ -87,10 +87,11 @@ jobs:
             body="Release ${tag}"
           fi
 
+          delim="EOF_$(date +%s)"
           {
-            echo "body<<'EOF'"
+            echo "body<<$delim"
             echo "$body"
-            echo "EOF"
+            echo "$delim"
           } >> "$GITHUB_OUTPUT"
 
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
