@@ -6,6 +6,7 @@
 # - resync_submodules_hard
 # - cleanup_bot_branches
 # - __read_repo_version
+# - handle_branch_deletion
 #
 # Dependencias: utils.sh (para log_info, log_warn, ask_yes_no, etc.)
 
@@ -92,5 +93,71 @@ cleanup_bot_branches() {
         log_success "🧹 Limpieza completada."
     else
         log_warn "Omitiendo limpieza de ramas."
+    fi
+}
+
+# ==============================================================================
+# GESTIÓN DE BORRADO DE RAMAS POST-PROMOTE (NUEVO)
+# ==============================================================================
+handle_branch_deletion() {
+    local branch="$1"
+    local pr_number="${2:-}"
+    local mode="${PROMOTE_DELETE_BRANCH:-}" # "true", "false" o "" (prompt)
+
+    # 1. Seguridad: Nunca borrar ramas protegidas
+    if is_protected_branch "$branch"; then
+        log_warn "Rama '$branch' es protegida. No se borrará."
+        return 0
+    fi
+
+    # 2. Si hay un modo predefinido (via flags --delete-branch / --keep-branch)
+    if [[ "$mode" == "true" ]]; then
+        log_info "🔥 Borrando rama local y remota: $branch"
+        git push origin --delete "$branch" >/dev/null 2>&1 || true
+        git branch -D "$branch" >/dev/null 2>&1 || true
+        return 0
+    fi
+
+    if [[ "$mode" == "false" ]]; then
+        log_info "💾 Manteniendo rama: $branch"
+        return 0
+    fi
+
+    # 3. Modo Interactivo (Solo si hay TTY)
+    if is_tty; then
+        echo
+        log_info "❓ ¿Qué quieres hacer con la rama origen '$branch'?"
+        
+        local choice
+        if have_gum_ui; then
+            choice=$(gum choose "Borrar local + remota" "Borrar solo local" "No borrar")
+        else
+            echo "1) Borrar local + remota"
+            echo "2) Borrar solo local"
+            echo "3) No borrar"
+            read -r -p "Elige una opción [3]: " opt
+            case "${opt:-3}" in
+                1) choice="Borrar local + remota" ;;
+                2) choice="Borrar solo local" ;;
+                *) choice="No borrar" ;;
+            esac
+        fi
+
+        case "$choice" in
+            "Borrar local + remota")
+                log_info "🔥 Borrando rama local y remota..."
+                git push origin --delete "$branch" >/dev/null 2>&1 || true
+                git branch -D "$branch" >/dev/null 2>&1 || true
+                ;;
+            "Borrar solo local")
+                log_info "🔥 Borrando rama local..."
+                git branch -D "$branch" >/dev/null 2>&1 || true
+                ;;
+            *)
+                log_info "💾 Rama conservada."
+                ;;
+        esac
+    else
+        log_info "💾 Modo no-interactivo detectado. Manteniendo rama: $branch"
     fi
 }

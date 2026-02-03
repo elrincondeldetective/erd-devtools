@@ -48,10 +48,40 @@ if [[ "${SIMPLE_MODE:-false}" == "false" && "${1:-}" != "_dev-monitor" ]]; then
 fi
 
 # ==============================================================================
-# 3. PARSEO DE COMANDOS (ROUTER)
+# 3. PARSEO DE ARGUMENTOS Y FLAGS
 # ==============================================================================
 
-TARGET_ENV="${1:-}"
+export PROMOTE_DELETE_BRANCH="" # unset por defecto (preguntará)
+TARGET_ENV=""
+EXTRA_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --delete-branch)
+            export PROMOTE_DELETE_BRANCH="true"
+            shift
+            ;;
+        --keep-branch)
+            export PROMOTE_DELETE_BRANCH="false"
+            shift
+            ;;
+        -*)
+            log_error "Opción desconocida: $1"
+            exit 1
+            ;;
+        *)
+            if [[ -z "$TARGET_ENV" ]]; then
+                TARGET_ENV="$1"
+            else
+                EXTRA_ARGS+=("$1")
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Re-inyectar EXTRA_ARGS para los comandos que los necesiten
+set -- "${EXTRA_ARGS[@]:-}"
 
 case "$TARGET_ENV" in
     dev)

@@ -109,7 +109,7 @@ promote_dev_monitor() {
 
     # 1) Habilitar auto-merge SOLO cuando ya está aprobado
     log_info "🤖 PR aprobado. Habilitando auto-merge (checks + merge)..."
-    GH_PAGER=cat gh pr merge "$feature_pr" --auto --squash --delete-branch
+    GH_PAGER=cat gh pr merge "$feature_pr" --auto --squash
 
     # 2) Esperar merge real
     log_info "🔄 Esperando merge del PR #$feature_pr..."
@@ -163,6 +163,10 @@ promote_dev_monitor() {
     maybe_trigger_gitops_update "dev" "$dev_sha" "$changed_paths"
 
     banner "✅ DEV LISTO (monitor finalizado)"
+    
+    # Limpieza de rama origen (interactiva o vía flags)
+    handle_branch_deletion "$feature_branch" "$feature_pr"
+
     echo "👉 Siguiente paso: git promote staging"
     return 0
 }
@@ -204,11 +208,16 @@ promote_to_dev() {
 
     banner "🤖 PR LISTO (#$pr_number) -> dev"
     echo "⏳ Habilitando auto-merge (espera aprobación + checks)..."
-    GH_PAGER=cat gh pr merge "$pr_number" --auto --squash --delete-branch
+    GH_PAGER=cat gh pr merge "$pr_number" --auto --squash
 
     # Default: async (libera terminal).
-    # Compat: DEVTOOLS_PROMOTE_DEV_SYNC=1 vuelve al modo bloqueante.
+    # [NUEVO] Si no hay flags de borrado y es TTY, forzamos modo SYNC para poder preguntar al final.
     local sync="${DEVTOOLS_PROMOTE_DEV_SYNC:-0}"
+    if [[ -z "${PROMOTE_DELETE_BRANCH:-}" && "$sync" == "0" && -t 0 ]]; then
+        log_info "Modo interactivo detectado: Se ejecutará de forma síncrona para permitir el borrado de rama al finalizar."
+        sync=1
+    fi
+
     if [[ "$sync" == "1" ]]; then
         promote_dev_monitor "$pr_number" "$current_branch"
         exit $?

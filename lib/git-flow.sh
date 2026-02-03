@@ -50,12 +50,15 @@ unique_branch_name() {
 ensure_feature_branch_or_rename() {
   local branch="$1"
   
-  # Si ya cumple el patrón, salimos
-  if [[ "$branch" == feature/* ]]; then return 0; fi
-  
   # Si la política está desactivada, salimos
   # (Se asume que la variable ENFORCE_FEATURE_BRANCH viene de config.sh)
   if [[ "${ENFORCE_FEATURE_BRANCH:-true}" != "true" ]]; then return 0; fi
+  
+  # Si ya cumple el patrón (feature/*, fix/*, docs/*, etc.), salimos.
+  # Regla: Cualquier rama con prefijo (tiene un '/') que no sea protegida es válida.
+  if [[ "$branch" == */* ]] && ! is_protected_branch "$branch"; then
+    return 0
+  fi
   
   # Si es protegida, se maneja en la función _before_commit, aquí ignoramos
   if is_protected_branch "$branch"; then return 0; fi
@@ -100,10 +103,10 @@ ensure_feature_branch_before_commit() {
   # Check rápido de política desactivada
   [[ "${ENFORCE_FEATURE_BRANCH:-true}" == "true" ]] || return 0
   
-  # Si ya es feature, todo OK
-  [[ "$branch" == feature/* ]] && return 0
-  [[ "$branch" == hotfix/* ]] && return 0 # Permitimos hotfix también
-  [[ "$branch" == fix/* ]] && return 0    # Permitimos fix también
+  # Si ya cumple el patrón (tiene '/') y no es protegida, todo OK
+  if [[ "$branch" == */* ]] && ! is_protected_branch "$branch"; then
+    return 0
+  fi
 
   # Caso: Rama protegida (main, dev...) -> Migrar trabajo a nueva rama
   if is_protected_branch "$branch"; then
