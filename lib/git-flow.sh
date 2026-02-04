@@ -123,7 +123,7 @@ ensure_feature_branch_before_commit() {
     [[ -n "$short_sha" ]] || short_sha="$(date +%Y%m%d%H%M%S)"
     
     # Creamos nombre único basado en la rama original
-    new_branch="$(unique_branch_name "feature/$(sanitize_feature_suffix "${branch}-${short_sha}")")"
+    new_branch="$(unique_branch_name "$(sanitize_feature_suffix "${branch}-${short_sha}")")"
 
     ui_header "🧹 Seguridad: Rama protegida detectada"
     ui_warn "Estabas en '$branch' (protegida)."
