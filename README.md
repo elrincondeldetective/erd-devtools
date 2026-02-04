@@ -1,58 +1,81 @@
-# erd-devtools
+# Flujo simple (Dislexia Friendly)
 
-Toolkit de productividad para Git y flujos de promoción (DEV → STAGING → PROD) dentro del ecosistema.
+Objetivo: cero friccion. Wrapper simple con `task`.
+Este README solo usa lo definido en los 5 Taskfiles indicados.
 
-## `git promote` — Promoción segura de ramas
+**Reglas rapidas**
+- Ejecuta `task` desde la raiz del repo, salvo cuando se indique otra ruta.
+- Si no recuerdas un comando: `task --list`.
+- Usa rutas cortas y comandos directos.
 
-### Targets
-- `git promote dev` → actualiza `origin/dev` con tu código (SHA capturado al invocar).
-- `git promote staging` → promueve lo que está en `dev` hacia `origin/staging`.
-- `git promote prod` → promueve lo que está en `staging` hacia `origin/main`.
-- `git promote dev-update [rama]` → integra una rama hacia `origin/dev-update` usando la estrategia elegida.
-- `git promote sync` → macro: `dev-update -> dev -> staging -> prod` (requiere estar en `dev-update`).
-- `git promote hotfix <name>` → crea `hotfix/<name>` desde `main`.
-- `git promote hotfix` (estando en `hotfix/*`) o `git promote hotfix finish` → finaliza hotfix y actualiza `main` + `dev`.
+**Comandos en la raiz del repo**
+- `task --list` — Lista todas las tareas.
+- `task app:ci APP=pmbok-backend` — CI de una app.
+- `task app:build APP=pmbok-frontend` — Build local de una app.
+- `task ci` — CI local completo.
+- `task ci:act` — CI local con Act.
+- `task build:local` — Build de imagenes local.
+- `task deploy:local` — Deploy local.
+- `task smoke:local` — Smoke local.
+- `task pipeline:local` — CI + Build + Deploy.
+- `task pipeline:local:headless` — Pipeline sin UI.
+- `task new:webapp APP=mi-app` — Crea nueva webapp.
+- `task dev:up` — AWS dev: levantar.
+- `task dev:down` — AWS dev: bajar.
+- `task dev:connect` — AWS dev: tuneles.
+- `task prod:up` — AWS prod: levantar.
+- `task prod:connect` — AWS prod: tuneles.
+- `task cluster:up` — Cluster local: levantar.
+- `task cluster:connect` — Cluster local: reconectar.
+- `task cluster:info` — Cluster local: info.
+- `task cluster:down` — Cluster local: pausar.
+- `task cluster:destroy` — Cluster local: borrar todo.
+- `task ctx:local` — Contexto local (minikube).
+- `task ctx:whoami` — Donde estoy conectado.
+- `task ui:local` — UI local (K9s).
+- `task cloud:up` — AWS compat: levantar.
+- `task cloud:down` — AWS compat: bajar.
+- `task cloud:deploy` — AWS compat: desplegar apps.
+- `task cloud:connect` — AWS compat: tuneles.
+- `task cloud:ctx` — AWS compat: kubeconfig.
+- `task cloud:audit` — AWS compat: auditoria de costos.
 
-### 🧯 Menú de seguridad (obligatorio)
-Antes de modificar ramas (excepto `doctor`), `git promote` obliga a escoger una estrategia:
+**App: El Rincon del Detective (Next.js)**
+Ruta: `apps/el-rincon-del-detective`
+- `task --list` — Lista tareas de la app.
+- `task ci` — Instala, lint y build.
+- `task build` — Placeholder (Amplify hace el build real).
+- `task start` — Dev server.
 
-1. **🛡️ Mi Versión Gana** → `merge-theirs`
-2. **⏩ Fast-Forward** → `ff-only`
-3. **🔀 Merge con commit** → `merge`
-4. **☢️ Force Update** → `force` (destructivo, usa `--force-with-lease`)
+**App: PMBOK (nivel app)**
+Ruta: `apps/pmbok`
+- `task --list` — Lista tareas de la app.
+- `task ci` — CI completo (backend + frontend).
+- `task install-ci` — Instala dependencias (CI).
+- `task test` — Pruebas de backend y frontend.
 
-> Si `ff-only` no es posible (historia divergida), el flujo devuelve `rc=3` y vuelve a pedir estrategia.
+**PMBOK Backend**
+Ruta: `apps/pmbok/backend`
+- `task install` — Instala dependencias local.
+- `task install-ci` — Instala dependencias CI.
+- `task test` — Pytest con DB efimera.
+- `task db:ensure` — Levanta DB efimera para CI.
+- `task db:cleanup` — Borra DB efimera de CI.
+- `task lint` — Linting.
+- `task fmt` — Formateo.
+- `task run` — Servidor de desarrollo.
 
-### Preflight (seguridad primero)
-Para comandos que promueven ramas (no `doctor`):
-- Verifica que estás dentro de un repo Git.
-- Verifica que `origin` exista y apunte a GitHub `github.com` (se permite alias SSH si resuelve a `HostName github.com`).
-- Ejecuta `git fetch origin --prune` de forma estricta (si falla red/credenciales, aborta).
-- Requiere working tree limpio (sin cambios sin commit).
+**PMBOK Frontend**
+Ruta: `apps/pmbok/frontend`
+- `task install` — Instala dependencias local.
+- `task install-ci` — Instala dependencias CI.
+- `task lint` — Linting.
+- `task build` — Build.
+- `task test` — Lint + Build.
+- `task run` — Dev server.
 
-### Variables útiles
-- `DEVTOOLS_PROMOTE_STRATEGY=merge-theirs|ff-only|merge|force`  
-  Requerida si no hay TTY/UI (CI/no-interactivo).
-- `DEVTOOLS_ASSUME_YES=1`  
-  Salta confirmaciones humanas (pero no elimina gates técnicos).
-- `DEVTOOLS_SYNC_DEV_DIRECT=1`  
-  (Opcional) habilita modo directo en el paso DEV dentro de `git promote sync`.
-- `DEVTOOLS_FORCE_PUSH_MODE=with-lease|force`  
-  Controla el modo de push destructivo (default: `with-lease`).
-
-### Ejemplos rápidos
-```bash
-# Promover tu rama actual a DEV (elige estrategia en el menú)
-git promote dev
-
-# CI/no-tty: define estrategia por env
-DEVTOOLS_PROMOTE_STRATEGY=ff-only git promote staging
-
-# Sync completo (desde dev-update)
-git checkout dev-update
-git promote sync
-
-# Hotfix
-git promote hotfix corregir-login
-# ...commits...
-git promote hotfix
+**Flujo rapido sugerido**
+1. Desde la raiz: `task --list`.
+2. Para PMBOK: entra a `apps/pmbok` y ejecuta `task ci`.
+3. Para El Rincon: entra a `apps/el-rincon-del-detective` y ejecuta `task ci`.
+4. Para desarrollo: entra al backend o frontend y ejecuta `task run`.
