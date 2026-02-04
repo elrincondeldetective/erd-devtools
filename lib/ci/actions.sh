@@ -6,7 +6,7 @@
 # ==============================================================================
 
 # ==============================================================================
-# VISUALIZACIÓN DE WORKFLOWS (Live Logs)
+# VISUALIZACIÓN DE WORKFLOWS (Live Logs).
 # ==============================================================================
 
 # Busca el último run en una rama y hace streaming de los logs a la terminal.
