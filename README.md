@@ -18,6 +18,20 @@ Este README solo usa lo definido en los 5 Taskfiles indicados.
 - La publicacion en GitHub se crea al empujar etiquetas `v*`.
 - `el-rincon-del-detective` ya no usa `semantic-release` y publica por etiquetas.
 
+**Versionado estandar (fuente unica: VERSION)**
+- `VERSION` es la fuente unica por repo.
+- `release-please` solo actualiza archivos (ej: `VERSION`, `CHANGELOG` y extras definidos).
+- Etiquetas: `vX.Y.Z` (final), `vX.Y.Z-rc.N` (staging), `vX.Y.Z-beta.N`, `vX.Y.Z-alpha.N`.
+- Flujo: `dev` -> `staging` genera RC, `staging` -> `main` genera final.
+- Las publicaciones en GitHub se crean al empujar etiquetas `v*`.
+- `el-rincon-del-detective` publica por etiquetas y adjunta artefacto.
+
+**Artefactos de release**
+- Formato: `<app>-vX.Y.Z.zip` o `<app>-vX.Y.Z-rc.N.zip`.
+- Ejemplo: `el-rincon-del-detective-v0.1.0-rc.1.zip`.
+- Contenido: build `out` cuando aplique.
+- Regla: el workflow de release adjunta el `.zip` al Release.
+
 **Comandos en la raiz del repo**
 - `task --list` — Lista todas las tareas.
 - `task app:ci APP=pmbok-backend` — CI de una app.
@@ -28,8 +42,8 @@ Este README solo usa lo definido en los 5 Taskfiles indicados.
 - `task deploy:local` — Despliegue local.
 - `task smoke:local` — Pruebas de humo locales.
 - `task pipeline:local` — CI + compilacion + despliegue.
-- `task pipeline:local:headless` — Ejecucion sin interfaz.
-- `task new:webapp APP=mi-app` — Crea nueva app web.
+- `task pipeline:local:headless` — Flujo sin interfaz.
+- `task new:webapp APP=mi-app` — Crea nueva webapp.
 - `task dev:up` — AWS dev: levantar.
 - `task dev:down` — AWS dev: bajar.
 - `task dev:connect` — AWS dev: tuneles.
@@ -50,14 +64,14 @@ Este README solo usa lo definido en los 5 Taskfiles indicados.
 - `task cloud:ctx` — AWS compat: kubeconfig.
 - `task cloud:audit` — AWS compat: auditoria de costos.
 
-**App: El Rincon del Detective (Next.js)**
+**Aplicacion: El Rincon del Detective (Next.js)**
 Ruta: `apps/el-rincon-del-detective`
 - `task --list` — Lista tareas de la app.
 - `task ci` — Instala dependencias, valida estilo y compila.
 - `task build` — Marcador (Amplify hace la compilacion real).
 - `task start` — Servidor de desarrollo.
 
-**App: PMBOK (nivel app)**
+**Aplicacion: PMBOK (nivel app)**
 Ruta: `apps/pmbok`
 - `task --list` — Lista tareas de la app.
 - `task ci` — CI completo (servidor + cliente).
