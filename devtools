@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Uso:
+  devtools local up [--profile basic|full]
+
+Opciones:
+  --profile   Perfil de bootstrap local (default: basic)
+  -h, --help  Muestra esta ayuda
+
+Notas:
+  - basic -> devops/k8s/bootstrap-local-basic.yaml
+  - full  -> devops/k8s/bootstrap-local.yaml
+  - DEVTOOLS_DRY_RUN=1 solo muestra acciones (sin kubectl apply)
+EOF
+}
+
+log_info() { echo "ℹ️  $*"; }
+log_ok() { echo "✅ $*"; }
+log_warn() { echo "⚠️  $*"; }
+log_error() { echo "❌ $*" >&2; }
+
+die() {
+  log_error "$*"
+  exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Comando requerido no encontrado: $1"
+}
+
+resolve_repo_root() {
+  git rev-parse --show-toplevel 2>/dev/null || pwd
+}
+
+resolve_profile_bootstrap_or_die() {
+  local repo_root="$1"
+  local profile="$2"
+
+  case "$profile" in
+    basic)
+      echo "${repo_root}/devops/k8s/bootstrap-local-basic.yaml"
+      ;;
+    full)
+      echo "${repo_root}/devops/k8s/bootstrap-local.yaml"
+      ;;
+    *)
+      die "Perfil inválido: '${profile}'. Usa --profile basic|full."
+      ;;
+  esac
+}
+
+local_up() {
+  local profile="basic"
+
+  while (( $# )); do
+    case "$1" in
+      --profile)
+        profile="${2:-}"
+        [[ -n "$profile" ]] || die "Falta valor para --profile"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        return 0
+        ;;
+      *)
+        die "Opción desconocida para 'local up': $1"
+        ;;
+    esac
+  done
+
+  local repo_root
+  repo_root="$(resolve_repo_root)"
+
+  local bootstrap
+  bootstrap="$(resolve_profile_bootstrap_or_die "$repo_root" "$profile")"
+
+  if [[ ! -f "$bootstrap" ]]; then
+    die "Este repo no tiene bootstrap local (${bootstrap}). Pendiente soportar app-repos."
+  fi
+
+  log_info "Perfil seleccionado: ${profile}"
+  log_info "Bootstrap: ${bootstrap}"
+
+  if [[ "${DEVTOOLS_DRY_RUN:-0}" == "1" ]]; then
+    log_warn "DEVTOOLS_DRY_RUN=1: omito 'kubectl apply -f ${bootstrap}'."
+    return 0
+  fi
+
+  require_cmd kubectl
+  kubectl apply -f "$bootstrap"
+  log_ok "Bootstrap aplicado: ${bootstrap}"
+}
+
+main() {
+  local cmd="${1:-}"
+  local subcmd="${2:-}"
+
+  case "$cmd" in
+    local)
+      if [[ "$subcmd" != "up" ]]; then
+        die "Uso inválido. Prueba: devtools local up --profile basic|full"
+      fi
+      shift 2
+      local_up "$@"
+      ;;
+    -h|--help|help|"")
+      usage
+      ;;
+    *)
+      die "Comando no soportado: ${cmd}. Prueba: devtools local up --profile basic|full"
+      ;;
+  esac
+}
+
+main "$@"

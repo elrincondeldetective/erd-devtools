@@ -103,3 +103,10 @@ Ruta: `apps/pmbok/frontend`
 2. Para PMBOK: entra a `apps/pmbok` y ejecuta `task ci`.
 3. Para El Rincon: entra a `apps/el-rincon-del-detective` y ejecuta `task ci`.
 4. Para desarrollo: entra al servidor o cliente y ejecuta `task run`.
+
+**Comando local up (erd-ecosystem)**
+- `devtools local up --profile basic` aplica `devops/k8s/bootstrap-local-basic.yaml` (sin observabilidad).
+- `devtools local up --profile full` aplica `devops/k8s/bootstrap-local.yaml` (con observabilidad).
+- Si no indicas `--profile`, usa `basic`.
+- Con `DEVTOOLS_DRY_RUN=1` no ejecuta `kubectl apply`; solo imprime la accion.
+- Si el repo no contiene esos bootstraps, falla con mensaje claro (pendiente soporte para app-repos).
