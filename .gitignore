@@ -46,3 +46,4 @@ devbox.lock
 
 .last_golden_sha.last_golden_sha
 .last_golden_sha
+.promote_tag
