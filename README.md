@@ -103,3 +103,8 @@ Ruta: `apps/pmbok/frontend`
 2. Para PMBOK: entra a `apps/pmbok` y ejecuta `task ci`.
 3. Para El Rincon: entra a `apps/el-rincon-del-detective` y ejecuta `task ci`.
 4. Para desarrollo: entra al servidor o cliente y ejecuta `task run`.
+
+**Workspace de apps (local)**
+- `devtools apps sync` sincroniza clones en `apps/` usando `.devtools/config/apps.yaml` del repo actual.
+- `DEVTOOLS_DRY_RUN=1 devtools apps sync` muestra acciones sin ejecutar `git clone/fetch/pull`.
+- Está pensado para ejecutarse desde `erd-ecosystem`.
