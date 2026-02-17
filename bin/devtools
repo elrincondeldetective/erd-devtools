@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+set -euo pipefail
+IFS=$'\n\t'
+
+usage() {
+  cat <<'EOF'
+Uso:
+  devtools apps sync
+
+Comandos:
+  apps sync   Sincroniza repos de apps en <repo-root>/apps leyendo <repo-root>/.devtools/config/apps.yaml
+
+Notas:
+  - DEVTOOLS_DRY_RUN=1: solo imprime acciones (sin clone/fetch/pull)
+EOF
+}
+
+log_info() { echo "ℹ️  $*"; }
+log_ok() { echo "✅ $*"; }
+log_warn() { echo "⚠️  $*"; }
+log_error() { echo "❌ $*" >&2; }
+
+die() {
+  log_error "$*"
+  exit 1
+}
+
+strip_quotes() {
+  local value="$1"
+  value="${value#\"}"
+  value="${value%\"}"
+  value="${value#\'}"
+  value="${value%\'}"
+  echo "$value"
+}
+
+resolve_repo_root_or_die() {
+  git rev-parse --show-toplevel 2>/dev/null || die "Debes ejecutar este comando dentro de un repositorio Git."
+}
+
+is_dry_run() {
+  [[ "${DEVTOOLS_DRY_RUN:-0}" == "1" ]]
+}
+
+# Pobla arreglo global APPS_ENTRIES con elementos "name|repo"
+parse_apps_config_or_die() {
+  local config_file="$1"
+  [[ -f "$config_file" ]] || die "Falta .devtools/config/apps.yaml (ruta esperada: ${config_file})"
+
+  APPS_ENTRIES=()
+
+  local in_apps=0
+  local item_name=""
+  local item_repo=""
+  local line_no=0
+
+  while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
+    line_no=$((line_no + 1))
+
+    local line="${raw_line%$'\r'}"
+    local trimmed
+    trimmed="$(printf '%s' "$line" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+
+    [[ -z "$trimmed" ]] && continue
+    [[ "${trimmed:0:1}" == "#" ]] && continue
+
+    if [[ "$trimmed" == "apps:" ]]; then
+      in_apps=1
+      continue
+    fi
+
+    [[ "$in_apps" -eq 1 ]] || continue
+
+    if [[ "$trimmed" =~ ^-[[:space:]]*name:[[:space:]]*(.+)$ ]]; then
+      if [[ -n "$item_name" || -n "$item_repo" ]]; then
+        [[ -n "$item_name" && -n "$item_repo" ]] || die "Config inválida en ${config_file}: item incompleto antes de línea ${line_no} (requiere name y repo)."
+        APPS_ENTRIES+=("${item_name}|${item_repo}")
+      fi
+      item_name="$(strip_quotes "${BASH_REMATCH[1]}")"
+      item_repo=""
+      continue
+    fi
+
+    if [[ "$trimmed" =~ ^name:[[:space:]]*(.+)$ ]]; then
+      item_name="$(strip_quotes "${BASH_REMATCH[1]}")"
+      continue
+    fi
+
+    if [[ "$trimmed" =~ ^repo:[[:space:]]*(.+)$ ]]; then
+      item_repo="$(strip_quotes "${BASH_REMATCH[1]}")"
+      continue
+    fi
+  done < "$config_file"
+
+  if [[ -n "$item_name" || -n "$item_repo" ]]; then
+    [[ -n "$item_name" && -n "$item_repo" ]] || die "Config inválida en ${config_file}: último item incompleto (requiere name y repo)."
+    APPS_ENTRIES+=("${item_name}|${item_repo}")
+  fi
+
+  [[ "${#APPS_ENTRIES[@]}" -gt 0 ]] || die "Config inválida en ${config_file}: no se encontraron apps bajo 'apps:'."
+}
+
+sync_app_entry() {
+  local workspace_root="$1"
+  local app_name="$2"
+  local app_repo="$3"
+  local app_dest="${workspace_root}/apps/${app_name}"
+
+  if [[ -d "${app_dest}/.git" ]]; then
+    if is_dry_run; then
+      log_warn "DRY-RUN: update ${app_name} (${app_dest}) [git fetch --prune + git pull --ff-only]"
+      return 0
+    fi
+
+    log_info "Update ${app_name}: ${app_dest}"
+    git -C "$app_dest" fetch --prune
+    git -C "$app_dest" pull --ff-only
+    log_ok "App actualizada: ${app_name}"
+    return 0
+  fi
+
+  if is_dry_run; then
+    log_warn "DRY-RUN: clone ${app_repo} -> ${app_dest}"
+    return 0
+  fi
+
+  log_info "Clone ${app_name}: ${app_repo} -> ${app_dest}"
+  mkdir -p "$(dirname "$app_dest")"
+  git clone "$app_repo" "$app_dest"
+  log_ok "App clonada: ${app_name}"
+}
+
+apps_sync() {
+  local repo_root
+  repo_root="$(resolve_repo_root_or_die)"
+
+  local config_file="${repo_root}/.devtools/config/apps.yaml"
+  parse_apps_config_or_die "$config_file"
+
+  log_info "Repo raíz: ${repo_root}"
+  log_info "Config apps: ${config_file}"
+
+  local entry
+  for entry in "${APPS_ENTRIES[@]}"; do
+    local app_name="${entry%%|*}"
+    local app_repo="${entry#*|}"
+
+    [[ -n "$app_name" ]] || die "Config inválida en ${config_file}: item sin name."
+    [[ -n "$app_repo" ]] || die "Config inválida en ${config_file}: item sin repo (app=${app_name})."
+
+    sync_app_entry "$repo_root" "$app_name" "$app_repo"
+  done
+
+  log_ok "apps sync completado (${#APPS_ENTRIES[@]} apps)."
+}
+
+main() {
+  local cmd="${1:-}"
+  local subcmd="${2:-}"
+
+  case "$cmd" in
+    apps)
+      case "$subcmd" in
+        sync)
+          shift 2
+          apps_sync "$@"
+          ;;
+        -h|--help|help|"")
+          usage
+          ;;
+        *)
+          die "Subcomando desconocido: apps ${subcmd}"
+          ;;
+      esac
+      ;;
+    -h|--help|help|"")
+      usage
+      ;;
+    *)
+      die "Comando desconocido: ${cmd}. Usa: devtools apps sync"
+      ;;
+  esac
+}
+
+main "$@"
