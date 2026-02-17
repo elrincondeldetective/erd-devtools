@@ -130,6 +130,39 @@ YAML
   fi
 }
 
+test_parsea_shape_real_monorepo() {
+  local tdir
+  tdir="$(mktemp -d)"
+  trap 'rm -rf "$tdir"' RETURN
+
+  mkdir -p "$tdir/.devtools/config"
+  mk_git_repo "$tdir"
+
+  cat > "$tdir/.devtools/config/apps.yaml" <<'YAML'
+apps:
+  - id: pmbok
+    path: apps/pmbok
+    build_mode: native
+  - id: erd
+    path: apps/erd/mobile
+    build_mode: native
+YAML
+
+  (
+    cd "$tdir"
+    DEVTOOLS_DRY_RUN=1 "$DEVTOOLS_BIN" apps sync --only pmbok > "$tdir/out_shape_real.log" 2>&1
+  )
+
+  if rg -n "pmbok" "$tdir/out_shape_real.log" >/dev/null \
+    && ! rg -n "erd" "$tdir/out_shape_real.log" >/dev/null \
+    && rg -n "git@github.com:elrincondeldetective/pmbok.git" "$tdir/out_shape_real.log" >/dev/null \
+    && rg -n "completado \(1 apps\)" "$tdir/out_shape_real.log" >/dev/null; then
+    ok "parsea shape real del monorepo (id/path) y resuelve --only"
+  else
+    ko "no parseó correctamente el shape real del monorepo"
+  fi
+}
+
 test_missing_config_fails() {
   local tdir
   tdir="$(mktemp -d)"
@@ -156,6 +189,7 @@ test_missing_config_fails() {
 test_dry_run_no_git_side_effects
 test_only_limita_a_una_app
 test_only_app_inexistente_falla
+test_parsea_shape_real_monorepo
 test_missing_config_fails
 
 echo "---"
